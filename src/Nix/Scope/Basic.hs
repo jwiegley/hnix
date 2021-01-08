@@ -19,6 +19,7 @@ module Nix.Scope.Basic where
 
 import Control.Applicative
 import Control.Monad.Exception
+import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Catch

@@ -14,6 +14,7 @@ import Nix.Effects
 import Nix.Render
 import Nix.Thunk
 import Nix.Thunk.StableId
+import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State.Strict
 import Control.Monad.Ref

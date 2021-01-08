@@ -18,6 +18,7 @@ module Nix.Thunk.Basic (ThunkT (..), runThunkT, NThunkF (..), Deferred (..)) whe
 
 import           Control.Exception       hiding ( catch )
 import           Control.Monad.Catch
+import           Control.Monad.Fail
 import           Control.Monad.Reader
 import           Control.Monad.State
 
