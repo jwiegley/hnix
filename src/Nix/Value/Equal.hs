@@ -47,9 +47,9 @@ import           Nix.Utils
 import           Nix.Value
 
 checkComparable
-  :: (Framed e m, MonadDataErrorContext t f m)
-  => NValue t f m
-  -> NValue t f m
+  :: (Framed e m, MonadDataErrorContext f m)
+  => NValue f m
+  -> NValue f m
   -> m ()
 checkComparable x y = case (x, y) of
   (NVConstant (NFloat _), NVConstant (NInt _)) -> pure ()
@@ -151,9 +151,9 @@ compareAttrSets f eq lm rm = runIdentity
 
 valueEqM
   :: forall t f m
-   . (MonadThunk t m (NValue t f m), Comonad f)
-  => NValue t f m
-  -> NValue t f m
+   . (MonadThunk m, Thunk m ~ t, ThunkValue m ~ NValue f m, Comonad f)
+  => NValue f m
+  -> NValue f m
   -> m Bool
 valueEqM (  Pure x) (  Pure y) = thunkEqM x y
 valueEqM (  Pure x) y@(Free _) = thunkEqM x =<< thunk (pure y)
@@ -168,10 +168,10 @@ valueEqM (Free (NValue (extract -> x))) (Free (NValue (extract -> y))) =
     NVStr' s -> pure $ Just s
     _        -> pure Nothing
 
-thunkEqM :: (MonadThunk t m (NValue t f m), Comonad f) => t -> t -> m Bool
+thunkEqM :: (MonadThunk m, Thunk m ~ t, ThunkValue m ~ NValue f m, Comonad f) => t -> t -> m Bool
 thunkEqM lt rt = force lt $ \lv -> force rt $ \rv ->
   let unsafePtrEq = case (lt, rt) of
-        (thunkId -> lid, thunkId -> rid) | lid == rid -> pure True
+        (lid, rid) | lid == rid -> pure True
         _ -> valueEqM lv rv
   in  case (lv, rv) of
         (NVClosure _ _, NVClosure _ _) -> unsafePtrEq

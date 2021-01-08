@@ -5,29 +5,24 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Nix.Cited.Basic where
 
 import           Control.Comonad                ( Comonad )
 import           Control.Comonad.Env            ( ComonadEnv )
-import           Control.Monad.Catch     hiding ( catchJust )
-import           Control.Monad.Reader
-import           Data.Fix
+import           Control.Monad.Free
 import           GHC.Generics
 import           Nix.Cited
-import           Nix.Eval                      as Eval
-import           Nix.Exec
-import           Nix.Expr
 import           Nix.Frames
-import           Nix.Options
 import           Nix.Thunk
-import           Nix.Utils
 import           Nix.Value
 
-newtype Cited t f m a = Cited { getCited :: NCited m (NValue t f m) a }
+newtype CitedT (f :: * -> *) m a = CitedT { unCitedT :: m a }
+
+newtype Cited f m a = Cited { getCited :: NCited m (NValue f m) a }
   deriving
     ( Generic
     , Typeable
@@ -36,25 +31,29 @@ newtype Cited t f m a = Cited { getCited :: NCited m (NValue t f m) a }
     , Foldable
     , Traversable
     , Comonad
-    , ComonadEnv [Provenance m (NValue t f m)]
     )
 
-instance HasCitations1 m (NValue t f m) (Cited t f m) where
+deriving instance t ~ Thunk m => ComonadEnv [Provenance m (Free (NValue' f m) t)] (Cited f m)
+
+instance t ~ Thunk m => HasCitations1 m (Free (NValue' f m) t) (Cited f m) where
   citations1 (Cited c) = citations c
   addProvenance1 x (Cited c) = Cited (addProvenance x c)
 
+{-
 instance ( Has e Options
          , Framed e m
-         , MonadThunk t m v
+         , MonadThunk m
          , Typeable m
          , Typeable f
-         , Typeable u
          , MonadCatch m
          )
-  => MonadThunk (Cited u f m t) m v where
+  => MonadThunk (CitedT f m) where
+  type Thunk (CitedT f m) = Cited f m (Thunk m)
+  type ThunkValue (CitedT f m) = ThunkValue m
   thunk mv = do
     opts :: Options <- asks (view hasLens)
 
+    --TODO: Can we handle `thunks opts == false` by not using CitedT at all?
     if thunks opts
       then do
         frames :: Frames <- asks (view hasLens)
@@ -69,10 +68,8 @@ instance ( Has e Options
             go _ = []
             ps = concatMap (go . frame) frames
 
-        fmap (Cited . NCited ps) . thunk $ mv
+        lift $ fmap (Cited . NCited ps) . thunk $ mv
       else fmap (Cited . NCited []) . thunk $ mv
-
-  thunkId (Cited (NCited _ t)) = thunkId @_ @m t
 
   queryM (Cited (NCited _ t)) = queryM t
 
@@ -98,3 +95,4 @@ instance ( Has e Options
         withFrame Info (ForcingExpr scope (wrapExprLoc s e)) (forceEff t f)
 
   further (Cited (NCited ps t)) f = Cited . NCited ps <$> further t f
+-}

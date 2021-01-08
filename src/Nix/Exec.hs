@@ -10,6 +10,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -27,9 +28,11 @@ import           Prelude                 hiding ( putStr
                                                 )
 
 import           Control.Applicative
+import           Control.Comonad
 import           Control.Monad
 import           Control.Monad.Catch     hiding ( catchJust )
 import           Control.Monad.Fix
+import           Control.Monad.Free
 import           Control.Monad.Reader
 import           Data.Fix
 import qualified Data.HashMap.Lazy             as M
@@ -67,86 +70,88 @@ import           GHC.DataSize
 #endif
 #endif
 
-type MonadCited t f m
-  = ( HasCitations m (NValue t f m) t
-  , HasCitations1 m (NValue t f m) f
+type MonadCited f m
+  = ( HasCitations m (NValue f m) (Thunk m)
+  , HasCitations1 m (NValue f m) f
   , MonadDataContext f m
   )
 
 nvConstantP
-  :: MonadCited t f m => Provenance m (NValue t f m) -> NAtom -> NValue t f m
+  :: MonadCited f m => Provenance m (NValue f m) -> NAtom -> NValue f m
 nvConstantP p x = addProvenance p (nvConstant x)
 
 nvStrP
-  :: MonadCited t f m
-  => Provenance m (NValue t f m)
+  :: MonadCited f m
+  => Provenance m (NValue f m)
   -> NixString
-  -> NValue t f m
+  -> NValue f m
 nvStrP p ns = addProvenance p (nvStr ns)
 
 nvPathP
-  :: MonadCited t f m => Provenance m (NValue t f m) -> FilePath -> NValue t f m
+  :: MonadCited f m => Provenance m (NValue f m) -> FilePath -> NValue f m
 nvPathP p x = addProvenance p (nvPath x)
 
 nvListP
-  :: MonadCited t f m
-  => Provenance m (NValue t f m)
-  -> [NValue t f m]
-  -> NValue t f m
+  :: MonadCited f m
+  => Provenance m (NValue f m)
+  -> [NValue f m]
+  -> NValue f m
 nvListP p l = addProvenance p (nvList l)
 
 nvSetP
-  :: MonadCited t f m
-  => Provenance m (NValue t f m)
-  -> AttrSet (NValue t f m)
+  :: MonadCited f m
+  => Provenance m (NValue f m)
+  -> AttrSet (NValue f m)
   -> AttrSet SourcePos
-  -> NValue t f m
+  -> NValue f m
 nvSetP p s x = addProvenance p (nvSet s x)
 
 nvClosureP
-  :: MonadCited t f m
-  => Provenance m (NValue t f m)
+  :: MonadCited f m
+  => Provenance m (NValue f m)
   -> Params ()
-  -> (NValue t f m -> m (NValue t f m))
-  -> NValue t f m
+  -> (NValue f m -> m (NValue f m))
+  -> NValue f m
 nvClosureP p x f = addProvenance p (nvClosure x f)
 
 nvBuiltinP
-  :: MonadCited t f m
-  => Provenance m (NValue t f m)
+  :: MonadCited f m
+  => Provenance m (NValue f m)
   -> String
-  -> (NValue t f m -> m (NValue t f m))
-  -> NValue t f m
+  -> (NValue f m -> m (NValue f m))
+  -> NValue f m
 nvBuiltinP p name f = addProvenance p (nvBuiltin name f)
 
 type MonadCitedThunks t f m
-  = ( MonadThunk t m (NValue t f m)
-  , MonadDataErrorContext t f m
-  , HasCitations m (NValue t f m) t
-  , HasCitations1 m (NValue t f m) f
+  = ( MonadThunk m, Thunk m ~ t, ThunkValue m ~ NValue f m
+  , MonadDataErrorContext f m
+  , HasCitations m (NValue f m) t
+  , HasCitations1 m (NValue f m) f
   )
 
-type MonadNix e t f m
+type MonadNix e f m
   = ( Has e SrcSpan
   , Has e Options
-  , Scoped (NValue t f m) m
+  , Scoped m (NValue f m) m
   , Framed e m
   , MonadFix m
   , MonadCatch m
   , MonadThrow m
   , Alternative m
-  , MonadEffects t f m
-  , MonadCitedThunks t f m
-  , MonadValue (NValue t f m) m
+  , MonadEffects f m
+  , MonadCitedThunks (Thunk m) f m
+  , MonadValue (NValue f m) m
   )
 
-data ExecFrame t f m = Assertion SrcSpan (NValue t f m)
-    deriving (Show, Typeable)
+data ExecFrame f m = Assertion SrcSpan (NValue f m)
+    deriving (Typeable)
 
-instance MonadDataErrorContext t f m => Exception (ExecFrame t f m)
+deriving instance (Show (Thunk m), Comonad f) => Show (ExecFrame f m)
 
-nverr :: forall e t f s m a . (MonadNix e t f m, Exception s) => s -> m a
-nverr = evalError @(NValue t f m)
+instance MonadDataErrorContext f m => Exception (ExecFrame f m)
+
+nverr :: forall e f s m a . (MonadNix e f m, Exception s) => s -> m a
+nverr = evalError @(NValue f m)
 
 currentPos :: forall e m . (MonadReader e m, Has e SrcSpan) => m SrcSpan
 currentPos = asks (view hasLens)
@@ -154,9 +159,9 @@ currentPos = asks (view hasLens)
 wrapExprLoc :: SrcSpan -> NExprLocF r -> NExprLoc
 wrapExprLoc span x = Fix (Fix (NSym_ span "<?>") <$ x)
 
-instance MonadNix e t f m => MonadEval (NValue t f m) m where
+instance (MonadNix e f m, t ~ Thunk m) => MonadEval (Free (NValue' f m) t) m where
   freeVariable var =
-    nverr @e @t @f
+    nverr @e @f
       $  ErrorCall
       $  "Undefined variable '"
       ++ Text.unpack var
@@ -165,19 +170,19 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
   synHole name = do
     span  <- currentPos
     scope <- currentScopes
-    evalError @(NValue t f m) $ SynHole $ SynHoleInfo
+    evalError @(Free (NValue' f m) t) $ SynHole $ SynHoleInfo
       { _synHoleInfo_expr  = Fix $ NSynHole_ span name
       , _synHoleInfo_scope = scope
       }
 
   attrMissing ks Nothing =
-    evalError @(NValue t f m)
+    evalError @(Free (NValue' f m) t)
       $  ErrorCall
       $  "Inheriting unknown attribute: "
       ++ intercalate "." (map Text.unpack (NE.toList ks))
 
   attrMissing ks (Just s) =
-    evalError @(NValue t f m)
+    evalError @(Free (NValue' f m) t)
       $  ErrorCall
       $  "Could not look up attribute "
       ++ intercalate "." (map Text.unpack (NE.toList ks))
@@ -187,14 +192,14 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
   evalCurPos = do
     scope                  <- currentScopes
     span@(SrcSpan delta _) <- currentPos
-    addProvenance @_ @_ @(NValue t f m)
+    addProvenance
         (Provenance scope (NSym_ span "__curPos"))
       <$> toValue delta
 
   evaledSym name val = do
     scope <- currentScopes
     span  <- currentPos
-    pure $ addProvenance @_ @_ @(NValue t f m)
+    pure $ addProvenance @_ @_ @(Free (NValue' f m) t)
       (Provenance scope (NSym_ span name))
       val
 
@@ -219,12 +224,12 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
     scope <- currentScopes
     span  <- currentPos
     nvPathP (Provenance scope (NLiteralPath_ span p))
-      <$> makeAbsolutePath @t @f @m p
+      <$> makeAbsolutePath @f @m p
 
   evalEnvPath p = do
     scope <- currentScopes
     span  <- currentPos
-    nvPathP (Provenance scope (NEnvPath_ span p)) <$> findEnvPath @t @f @m p
+    nvPathP (Provenance scope (NEnvPath_ span p)) <$> findEnvPath @f @m p
 
   evalUnary op arg = do
     scope <- currentScopes
@@ -287,11 +292,11 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
 
 infixl 1 `callFunc`
 callFunc
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 callFunc fun arg = demand fun $ \fun' -> do
   frames :: Frames <- asks (view hasLens)
   when (length frames > 2000) $ throwError $ ErrorCall
@@ -301,18 +306,18 @@ callFunc fun arg = demand fun $ \fun' -> do
       f arg
     NVBuiltin name f -> do
       span <- currentPos
-      withFrame Info (Calling @m @(NValue t f m) name span) (f arg)
+      withFrame Info (Calling @m @(Thunk m) name span) (f arg)
     s@(NVSet m _) | Just f <- M.lookup "__functor" m -> do
       demand f $ (`callFunc` s) >=> (`callFunc` arg)
     x -> throwError $ ErrorCall $ "Attempt to call non-function: " ++ show x
 
 execUnaryOp
-  :: (Framed e m, MonadCited t f m, Show t)
-  => Scopes m (NValue t f m)
+  :: (Framed e m, MonadCited f m, Show (Thunk m))
+  => Scopes m (NValue f m)
   -> SrcSpan
   -> NUnaryOp
-  -> NValue t f m
-  -> m (NValue t f m)
+  -> NValue f m
+  -> m (NValue f m)
 execUnaryOp scope span op arg = do
   case arg of
     NVConstant c -> case (op, c) of
@@ -334,14 +339,14 @@ execUnaryOp scope span op arg = do
   unaryOp = pure . nvConstantP (Provenance scope (NUnary_ span op (Just arg)))
 
 execBinaryOp
-  :: forall e t f m
-   . (MonadNix e t f m, MonadEval (NValue t f m) m)
-  => Scopes m (NValue t f m)
+  :: forall e f m
+   . (MonadNix e f m, MonadEval (NValue f m) m)
+  => Scopes m (NValue f m)
   -> SrcSpan
   -> NBinaryOp
-  -> NValue t f m
-  -> m (NValue t f m)
-  -> m (NValue t f m)
+  -> NValue f m
+  -> m (NValue f m)
+  -> m (NValue f m)
 
 execBinaryOp scope span op lval rarg = case op of
   NEq   -> rarg >>= \rval -> valueEqM lval rval >>= boolOp rval
@@ -361,7 +366,7 @@ execBinaryOp scope span op lval rarg = case op of
                  execBinaryOpForced scope span op lval' rval'
 
  where
-  toBoolOp :: Maybe (NValue t f m) -> Bool -> m (NValue t f m)
+  toBoolOp :: Maybe (NValue f m) -> Bool -> m (NValue f m)
   toBoolOp r b = pure $ nvConstantP
     (Provenance scope (NBinary_ span op (Just lval) r))
     (NBool b)
@@ -370,14 +375,14 @@ execBinaryOp scope span op lval rarg = case op of
 
 
 execBinaryOpForced
-  :: forall e t f m
-   . (MonadNix e t f m, MonadEval (NValue t f m) m)
-  => Scopes m (NValue t f m)
+  :: forall e f m
+   . (MonadNix e f m, MonadEval (NValue f m) m)
+  => Scopes m (NValue f m)
   -> SrcSpan
   -> NBinaryOp
-  -> NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  -> NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 
 execBinaryOpForced scope span op lval rval = case op of
   NLt  -> compare (<)
@@ -405,11 +410,11 @@ execBinaryOpForced scope span op lval rval = case op of
       (\rs2 -> nvStrP prov (ls `mappend` rs2))
         <$> coerceToString callFunc CopyToStore CoerceStringy rs
     (NVPath ls, NVStr rs) -> case getStringNoContext rs of
-      Just rs2 -> nvPathP prov <$> makeAbsolutePath @t @f (ls `mappend` Text.unpack rs2)
+      Just rs2 -> nvPathP prov <$> makeAbsolutePath @f (ls `mappend` Text.unpack rs2)
       Nothing -> throwError $ ErrorCall $
         -- data/nix/src/libexpr/eval.cc:1412
         "A string that refers to a store path cannot be appended to a path."
-    (NVPath ls, NVPath rs) -> nvPathP prov <$> makeAbsolutePath @t @f (ls ++ rs)
+    (NVPath ls, NVPath rs) -> nvPathP prov <$> makeAbsolutePath @f (ls ++ rs)
 
     (ls@NVSet{}, NVStr rs) ->
       (\ls2 -> nvStrP prov (ls2 `mappend` rs))
@@ -427,11 +432,11 @@ execBinaryOpForced scope span op lval rval = case op of
   NApp  -> throwError $ ErrorCall $ "NApp should be handled by evalApp"
 
  where
-  prov :: Provenance m (NValue t f m)
+  prov :: Provenance m (NValue f m)
   prov = Provenance scope (NBinary_ span op (Just lval) (Just rval))
 
   toBool = pure . nvConstantP prov . NBool
-  compare :: (forall a. Ord a => a -> a -> Bool) -> m (NValue t f m)
+  compare :: (forall a. Ord a => a -> a -> Bool) -> m (NValue f m)
   compare op = case (lval, rval) of
     (NVConstant l, NVConstant r) -> toBool $ l `op` r
     (NVStr l, NVStr r) -> toBool $ l `op` r
@@ -440,13 +445,13 @@ execBinaryOpForced scope span op lval rval = case op of
   toInt = pure . nvConstantP prov . NInt
   toFloat = pure . nvConstantP prov . NFloat
 
-  numBinOp :: (forall a. Num a => a -> a -> a) -> m (NValue t f m)
+  numBinOp :: (forall a. Num a => a -> a -> a) -> m (NValue f m)
   numBinOp op = numBinOp' op op
 
   numBinOp'
     :: (Integer -> Integer -> Integer)
     -> (Float -> Float -> Float)
-    -> m (NValue t f m)
+    -> m (NValue f m)
 
   numBinOp' intOp floatOp = case (lval, rval) of
     (NVConstant l, NVConstant r) -> case (l, r) of
@@ -478,7 +483,7 @@ fromStringNoContext ns = case getStringNoContext ns of
   Nothing  -> throwError $ ErrorCall $ "expected string with no context, but got " ++ show ns
 
 addTracing
-  :: (MonadNix e t f m, Has e Options, MonadReader Int n, Alternative n)
+  :: (MonadNix e f m, Has e Options, MonadReader Int n, Alternative n)
   => Alg NExprLocF (m a)
   -> Alg NExprLocF (n (m a))
 addTracing k v = do
@@ -502,22 +507,22 @@ addTracing k v = do
       print $ msg rendered <> " ...done"
       pure res
 
-evalExprLoc :: forall e t f m . MonadNix e t f m => NExprLoc -> m (NValue t f m)
+evalExprLoc :: forall e f m . MonadNix e f m => NExprLoc -> m (NValue f m)
 evalExprLoc expr = do
   opts :: Options <- asks (view hasLens)
   if tracing opts
     then join . (`runReaderT` (0 :: Int)) $ adi
       (addTracing phi)
-      (raise (addStackFrames @(NValue t f m) . addSourcePositions))
+      (raise (addStackFrames @(NValue f m) . addSourcePositions))
       expr
-    else adi phi (addStackFrames @(NValue t f m) . addSourcePositions) expr
+    else adi phi (addStackFrames @(NValue f m) . addSourcePositions) expr
  where
   phi = Eval.eval . annotated . getCompose
   raise k f x = ReaderT $ \e -> k (\t -> runReaderT (f t) e) x
 
-exec :: (MonadNix e t f m, MonadInstantiate m) => [String] -> m (NValue t f m)
+exec :: (MonadNix e f m, MonadInstantiate m) => [String] -> m (NValue f m)
 exec args = either throwError evalExprLoc =<< exec' args
 
 nixInstantiateExpr
-  :: (MonadNix e t f m, MonadInstantiate m) => String -> m (NValue t f m)
+  :: (MonadNix e f m, MonadInstantiate m) => String -> m (NValue f m)
 nixInstantiateExpr s = either throwError evalExprLoc =<< instantiateExpr s

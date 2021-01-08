@@ -76,7 +76,7 @@ newtype Reducer m a = Reducer
 staticImport
   :: forall m
    . ( MonadIO m
-     , Scoped NExprLoc m
+     , Scoped m NExprLoc m
      , MonadFail m
      , MonadReader (Maybe FilePath, Scopes m NExprLoc) m
      , MonadState (HashMap FilePath NExprLoc, HashMap Text Text) m
@@ -131,7 +131,7 @@ reduceExpr mpath expr =
 reduce
   :: forall m
    . ( MonadIO m
-     , Scoped NExprLoc m
+     , Scoped m NExprLoc m
      , MonadFail m
      , MonadReader (Maybe FilePath, Scopes m NExprLoc) m
      , MonadState (HashMap FilePath NExprLoc, MS.HashMap Text Text) m
@@ -220,18 +220,18 @@ reduce e@(NSet_ ann NNonRecursive binds) = do
         Inherit{} -> True
         _         -> False
   if usesInherit
-    then clearScopes @NExprLoc $ Fix . NSet_ ann NNonRecursive <$> traverse sequence binds
+    then clearScopes $ Fix . NSet_ ann NNonRecursive <$> traverse sequence binds
     else Fix <$> sequence e
 
 -- Encountering a 'rec set' construction eliminates any hope of inlining
 -- definitions.
 reduce (NSet_ ann NRecursive binds) =
-  clearScopes @NExprLoc $ Fix . NSet_ ann NRecursive <$> traverse sequence binds
+  clearScopes $ Fix . NSet_ ann NRecursive <$> traverse sequence binds
 
 -- Encountering a 'with' construction eliminates any hope of inlining
 -- definitions.
 reduce (NWith_ ann scope body) =
-  clearScopes @NExprLoc $ fmap Fix $ NWith_ ann <$> scope <*> body
+  clearScopes $ fmap Fix $ NWith_ ann <$> scope <*> body
 
 -- | Reduce a let binds section by pushing lambdas,
 --   constants and strings to the body scope.
@@ -414,8 +414,8 @@ reducingEvalExpr eval mpath expr = do
   return (fromMaybe nNull expr'', eres)
   where addEvalFlags k (FlaggedF (b, x)) = liftIO (writeIORef b True) *> k x
 
-instance Monad m => Scoped NExprLoc (Reducer m) where
+instance Monad m => Scoped (Reducer m) NExprLoc (Reducer m) where
   currentScopes = currentScopesReader
   clearScopes   = clearScopesReader @(Reducer m) @NExprLoc
   pushScopes    = pushScopesReader
-  lookupVar     = lookupVarReader
+  askLookupVar  = lookupVarReader

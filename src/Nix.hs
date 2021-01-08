@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Nix
@@ -58,7 +59,7 @@ import           Nix.XML
 --   type. It sets up the common Nix environment and applies the
 --   transformations, allowing them to be easily composed.
 nixEval
-  :: (MonadNix e t f m, Has e Options, Functor g)
+  :: (MonadNix e f m, Has e Options, Functor g)
   => Maybe FilePath
   -> Transform g (m a)
   -> Alg g (m a)
@@ -68,19 +69,20 @@ nixEval mpath xform alg = withNixContext mpath . adi alg xform
 
 -- | Evaluate a nix expression in the default context
 nixEvalExpr
-  :: (MonadNix e t f m, Has e Options)
+  :: forall e f m.
+     (MonadNix e f m, Has e Options)
   => Maybe FilePath
   -> NExpr
-  -> m (NValue t f m)
+  -> m (NValue f m)
 nixEvalExpr mpath = nixEval mpath id Eval.eval
 
 -- | Evaluate a nix expression in the default context
 nixEvalExprLoc
-  :: forall e t f m
-   . (MonadNix e t f m, Has e Options)
+  :: forall e f m
+   . (MonadNix e f m, Has e Options)
   => Maybe FilePath
   -> NExprLoc
-  -> m (NValue t f m)
+  -> m (NValue f m)
 nixEvalExprLoc mpath = nixEval
   mpath
   (Eval.addStackFrames . Eval.addSourcePositions)
@@ -92,17 +94,17 @@ nixEvalExprLoc mpath = nixEval
 --   'MonadNix'). All this function does is provide the right type class
 --   context.
 nixTracingEvalExprLoc
-  :: (MonadNix e t f m, Has e Options, MonadIO m, Alternative m)
+  :: (MonadNix e f m, Has e Options, MonadIO m, Alternative m)
   => Maybe FilePath
   -> NExprLoc
-  -> m (NValue t f m)
+  -> m (NValue f m)
 nixTracingEvalExprLoc mpath = withNixContext mpath . evalExprLoc
 
 evaluateExpression
-  :: (MonadNix e t f m, Has e Options)
+  :: (MonadNix e f m, Has e Options)
   => Maybe FilePath
-  -> (Maybe FilePath -> NExprLoc -> m (NValue t f m))
-  -> (NValue t f m -> m a)
+  -> (Maybe FilePath -> NExprLoc -> m (NValue f m))
+  -> (NValue f m -> m a)
   -> NExprLoc
   -> m a
 evaluateExpression mpath evaluator handler expr = do
@@ -124,10 +126,10 @@ evaluateExpression mpath evaluator handler expr = do
   argmap args = nvSet (M.fromList args) mempty
 
 processResult
-  :: forall e t f m a
-   . (MonadNix e t f m, Has e Options)
-  => (NValue t f m -> m a)
-  -> NValue t f m
+  :: forall e f m a
+   . (MonadNix e f m, Has e Options)
+  => (NValue f m -> m a)
+  -> NValue f m
   -> m a
 processResult h val = do
   opts :: Options <- asks (view hasLens)
@@ -135,7 +137,7 @@ processResult h val = do
     Nothing                         -> h val
     Just (Text.splitOn "." -> keys) -> go keys val
  where
-  go :: [Text.Text] -> NValue t f m -> m a
+  go :: [Text.Text] -> NValue f m -> m a
   go [] v = h v
   go ((Text.decimal -> Right (n,"")) : ks) v = demand v $ \case
     NVList xs -> case ks of
