@@ -14,7 +14,10 @@ import Nix.Effects
 import Nix.Render
 import Nix.Thunk
 import Nix.Thunk.StableId
+#if __GLASGOW_HASKELL__ < 880
+import Prelude hiding (fail)
 import Control.Monad.Fail
+#endif
 import Control.Monad.Reader
 import Control.Monad.State.Strict
 import Control.Monad.Ref

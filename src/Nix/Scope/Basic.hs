@@ -19,7 +19,10 @@ module Nix.Scope.Basic where
 
 import Control.Applicative
 import Control.Monad.Exception
+#if __GLASGOW_HASKELL__ < 880
+import Prelude hiding (fail)
 import Control.Monad.Fail
+#endif
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Catch
