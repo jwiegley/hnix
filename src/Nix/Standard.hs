@@ -5,7 +5,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
@@ -25,6 +24,8 @@ import           Control.Monad.Reader
 import           Control.Monad.Ref
 import           Control.Monad.State
 import           Data.Coerce
+import           Data.Constraint                ( (\\) )
+import           Data.Constraint.Forall         ( Forall, inst )
 import           Data.Functor.Identity
 import           Data.HashMap.Lazy              ( HashMap )
 import           Data.Text                      ( Text )
@@ -202,8 +203,12 @@ instance HasCitations1 m v Identity where
 
 type StandardT m = Fix1T StandardTF m
 
-instance (forall m. MonadTrans (t (Fix1T t m))) => MonadTrans (Fix1T t) where
-  lift = Fix1T . lift
+class MonadTrans (t (Fix1T t m)) => TransAtFix1T t m
+
+instance MonadTrans (t (Fix1T t m)) => TransAtFix1T t m
+
+instance Forall (TransAtFix1T t) => MonadTrans (Fix1T t) where
+  lift (x :: m a) = Fix1T $ (lift \\ inst @(TransAtFix1T t) @m) x
 
 mkStandardT
   :: StandardTFInner (Fix1T StandardTF m) m a

@@ -404,6 +404,7 @@ library
     , binary >= 0.8.5 && < 0.9
     , bytestring >= 0.10.8 && < 0.11
     , comonad >= 5.0.4 && < 5.1
+    , constraints >= 0.11 && <0.13
     , containers >= 0.5.11.0 && < 0.7
     , data-fix >= 0.3.0 && < 0.4
     , deepseq >= 1.4.3 && <1.5

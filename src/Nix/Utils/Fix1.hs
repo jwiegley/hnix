@@ -4,9 +4,10 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE QuantifiedConstraints #-}
 
 module Nix.Utils.Fix1 where
 
@@ -22,6 +23,9 @@ import           Control.Monad.Catch            ( MonadCatch
                                                 , MonadThrow )
 import           Control.Monad.Reader           ( MonadReader )
 import           Control.Monad.State            ( MonadState )
+import           Data.Constraint                ( (\\) )
+import           Data.Constraint.Forall         ( Forall, inst )
+
 
 import Nix.Thunk --TODO: Move MonadTransWrap somewhere better, or find something that already exists
 
@@ -60,8 +64,12 @@ deriving instance MonadMask (t (Fix1T t m) m) => MonadMask (Fix1T t m)
 deriving instance MonadReader e (t (Fix1T t m) m) => MonadReader e (Fix1T t m)
 deriving instance MonadState s (t (Fix1T t m) m) => MonadState s (Fix1T t m)
 
-instance (forall m. MonadTransWrap (t (Fix1T t m))) => MonadTransWrap (Fix1T t) where
-  liftWrap f (Fix1T a) = Fix1T $ liftWrap f a
+class MonadTransWrap (t (Fix1T t m)) => TransWrapAtFix1T t m
+
+instance MonadTransWrap (t (Fix1T t m)) => TransWrapAtFix1T t m
+
+instance Forall (TransWrapAtFix1T t) => MonadTransWrap (Fix1T t) where
+  liftWrap (f :: forall x. m x -> m x) (Fix1T (a :: (t (Fix1T t m) m a))) = Fix1T $ liftWrap f a \\ inst @(TransWrapAtFix1T t) @m
 
 {-
 
