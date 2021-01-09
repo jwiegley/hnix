@@ -28,6 +28,7 @@ import           Control.Monad.ST
 import           Control.Monad.Trans.Reader
 import           Data.HashMap.Lazy              ( HashMap )
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned
 import           Data.List
 import qualified Data.List.NonEmpty            as NE
 import           Data.Text                      ( Text )
@@ -60,7 +61,7 @@ data NTypeF (m :: * -> *) r
     = TConstant [TAtom]
     | TStr
     | TList r
-    | TSet (Maybe (HashMap Text r))
+    | TSet (Maybe (HashMap VarName r))
     | TClosure (Params ())
     | TPath
     | TBuiltin String (Symbolic m -> m r)
@@ -271,19 +272,19 @@ instance (MonadThunkId m, MonadAtomicRef m, MonadCatch m)
   demand (SV v) f = f (SV v)
 
 instance MonadLint e m => MonadEval (Symbolic m) m where
-  freeVariable var = symerr $ "Undefined variable '" ++ Text.unpack var ++ "'"
+  freeVariable var = symerr $ "Undefined variable '" ++ Text.unpack (unintern var) ++ "'"
 
   attrMissing ks Nothing =
     evalError @(Symbolic m)
       $  ErrorCall
       $  "Inheriting unknown attribute: "
-      ++ intercalate "." (map Text.unpack (NE.toList ks))
+      ++ intercalate "." (map (Text.unpack . unintern) (NE.toList ks))
 
   attrMissing ks (Just s) =
     evalError @(Symbolic m)
       $  ErrorCall
       $  "Could not look up attribute "
-      ++ intercalate "." (map Text.unpack (NE.toList ks))
+      ++ intercalate "." (map (Text.unpack . unintern) (NE.toList ks))
       ++ " in "
       ++ show s
 
@@ -293,8 +294,8 @@ instance MonadLint e m => MonadEval (Symbolic m) m where
     c <- mkSymbolic [TConstant [TInt]]
     mkSymbolic [TSet (Just (M.fromList (go f l c)))]
    where
-    go f l c =
-      [(Text.pack "file", f), (Text.pack "line", l), (Text.pack "col", c)]
+    go f l c = map (\(a, b) -> (intern $ Text.pack a, b))
+      [("file", f), ("line", l), ("col", c)]
 
   evalConstant c = mkSymbolic [go c]
    where

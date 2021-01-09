@@ -320,7 +320,7 @@ instance ( Convertible e t f m
     f' <- toValue (makeNixStringWithoutContext (Text.pack f))
     l' <- toValue (unPos l)
     c' <- toValue (unPos c)
-    let pos = M.fromList [("file" :: Text, f'), ("line", l'), ("column", c')]
+    let pos = M.fromList [("file", f'), ("line", l'), ("column", c')]
     pure $ nvSet' pos mempty
 
 -- | With 'ToValue', we can always act recursively

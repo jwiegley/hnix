@@ -9,6 +9,7 @@
 
 module Main where
 
+import           Control.Arrow                  ( first )
 import           Control.Comonad                ( extract )
 import qualified Control.DeepSeq               as Deep
 import qualified Control.Exception             as Exc
@@ -17,6 +18,7 @@ import           Control.Monad.Catch
 import           Control.Monad.Free
 import           Control.Monad.IO.Class
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned                  ( unintern )
 import qualified Data.Map                      as Map
 import           Data.List                      ( sortOn )
 import           Data.Maybe                     ( fromJust )
@@ -164,7 +166,7 @@ main = do
       findAttrs = go ""
        where
         go prefix s = do
-          xs <- forM (sortOn fst (M.toList s)) $ \(k, nv) -> case nv of
+          xs <- forM (sortOn fst (map (first unintern) $ M.toList s)) $ \(k, nv) -> case nv of
             Free v -> pure (k, Just (Free v))
             Pure (StdThunk (extract -> Thunk _ _ ref)) -> do
               let path         = prefix ++ Text.unpack k

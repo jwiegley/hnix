@@ -9,6 +9,7 @@ import qualified Data.HashMap.Lazy             as M
 import           Data.List
 import           Data.Ord
 import qualified Data.Text                     as Text
+import           Data.Interned
 import           Nix.Atoms
 import           Nix.Expr.Types
 import           Nix.String
@@ -47,7 +48,7 @@ toXML = runWithStringContext . fmap pp . iterNValue (\_ _ -> cyc) phi
       (map
         (\(k, v) -> Elem
           (Element (unqual "attr")
-                   [Attr (unqual "name") (Text.unpack k)]
+                   [Attr (unqual "name") (Text.unpack $ unintern k)]
                    [Elem v]
                    Nothing
           )
@@ -59,19 +60,19 @@ toXML = runWithStringContext . fmap pp . iterNValue (\_ _ -> cyc) phi
     NVClosure' p _ ->
       pure $ Element (unqual "function") [] (paramsXML p) Nothing
     NVPath' fp        -> pure $ mkElem "path" "value" fp
-    NVBuiltin' name _ -> pure $ mkElem "function" "name" name
+    NVBuiltin' name _ -> pure $ mkElem "function" "name" (Text.unpack $ unintern name)
     _                 -> error "Pattern synonyms mask coverage"
 
 mkElem :: String -> String -> String -> Element
 mkElem n a v = Element (unqual n) [Attr (unqual a) v] [] Nothing
 
 paramsXML :: Params r -> [Content]
-paramsXML (Param name) = [Elem $ mkElem "varpat" "name" (Text.unpack name)]
+paramsXML (Param name) = [Elem $ mkElem "varpat" "name" (Text.unpack $ unintern name)]
 paramsXML (ParamSet s b mname) =
   [Elem $ Element (unqual "attrspat") (battr <> nattr) (paramSetXML s) Nothing]
  where
   battr = [ Attr (unqual "ellipsis") "1" | b ]
-  nattr = maybe [] ((: []) . Attr (unqual "name") . Text.unpack) mname
+  nattr = maybe [] ((: []) . Attr (unqual "name") . Text.unpack . unintern) mname
 
 paramSetXML :: ParamSet r -> [Content]
-paramSetXML = map (\(k, _) -> Elem $ mkElem "attr" "name" (Text.unpack k))
+paramSetXML = map (\(k, _) -> Elem $ mkElem "attr" "name" (Text.unpack $ unintern k))

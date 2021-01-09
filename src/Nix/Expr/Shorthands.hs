@@ -11,6 +11,7 @@ import           Data.Fix
 import           Data.List.NonEmpty             ( NonEmpty(..) )
 import           Data.Text                      ( Text )
 import           Nix.Atoms
+import           Nix.Utils
 import           Nix.Expr.Types
 import           Text.Megaparsec.Pos            ( SourcePos )
 
@@ -65,19 +66,19 @@ mkRelPathF :: FilePath -> NExprF a
 mkRelPathF = mkPathF False
 
 -- | Make a variable (symbol)
-mkSym :: Text -> NExpr
+mkSym :: VarName -> NExpr
 mkSym = Fix . mkSymF
 
-mkSymF :: Text -> NExprF a
+mkSymF :: VarName -> NExprF a
 mkSymF = NSym
 
-mkSynHole :: Text -> NExpr
+mkSynHole :: VarName -> NExpr
 mkSynHole = Fix . mkSynHoleF
 
-mkSynHoleF :: Text -> NExprF a
+mkSynHoleF :: VarName -> NExprF a
 mkSynHoleF = NSynHole
 
-mkSelector :: Text -> NAttrPath NExpr
+mkSelector :: VarName -> NAttrPath NExpr
 mkSelector = (:| []) . StaticKey
 
 mkBool :: Bool -> NExpr
@@ -98,7 +99,7 @@ mkOper op = Fix . NUnary op
 mkOper2 :: NBinaryOp -> NExpr -> NExpr -> NExpr
 mkOper2 op a = Fix . NBinary op a
 
-mkParamset :: [(Text, Maybe NExpr)] -> Bool -> Params NExpr
+mkParamset :: [(VarName, Maybe NExpr)] -> Bool -> Params NExpr
 mkParamset params variadic = ParamSet params variadic Nothing
 
 mkRecSet :: [Binding NExpr] -> NExpr
@@ -126,11 +127,11 @@ mkFunction :: Params NExpr -> NExpr -> NExpr
 mkFunction params = Fix . NAbs params
 
 {-
-mkDot :: NExpr -> Text -> NExpr
+mkDot :: NExpr -> VarName -> NExpr
 mkDot e key = mkDots e [key]
 
 -- | Create a dotted expression using only text.
-mkDots :: NExpr -> [Text] -> NExpr
+mkDots :: NExpr -> [VarName] -> NExpr
 mkDots e [] = e
 mkDots (Fix (NSelect e keys' x)) keys =
   -- Special case: if the expression in the first argument is already
@@ -148,11 +149,11 @@ inheritFrom :: e -> [NKeyName e] -> SourcePos -> Binding e
 inheritFrom expr = Inherit (Just expr)
 
 -- | Shorthand for producing a binding of a name to an expression.
-bindTo :: Text -> NExpr -> Binding NExpr
+bindTo :: VarName -> NExpr -> Binding NExpr
 bindTo name x = NamedVar (mkSelector name) x nullPos
 
 -- | Infix version of bindTo.
-($=) :: Text -> NExpr -> Binding NExpr
+($=) :: VarName -> NExpr -> Binding NExpr
 ($=) = bindTo
 
 infixr 2 $=
@@ -173,19 +174,19 @@ modifyFunctionBody f (Fix e) = case e of
   _                -> error "Not a function"
 
 -- | A let statement with multiple assignments.
-letsE :: [(Text, NExpr)] -> NExpr -> NExpr
+letsE :: [(VarName, NExpr)] -> NExpr -> NExpr
 letsE pairs = Fix . NLet (map (uncurry bindTo) pairs)
 
 -- | Wrapper for a single-variable @let@.
-letE :: Text -> NExpr -> NExpr -> NExpr
+letE :: VarName -> NExpr -> NExpr -> NExpr
 letE varName varExpr = letsE [(varName, varExpr)]
 
 -- | Make an attribute set (non-recursive).
-attrsE :: [(Text, NExpr)] -> NExpr
+attrsE :: [(VarName, NExpr)] -> NExpr
 attrsE pairs = Fix $ NSet NNonRecursive (map (uncurry bindTo) pairs)
 
 -- | Make an attribute set (recursive).
-recAttrsE :: [(Text, NExpr)] -> NExpr
+recAttrsE :: [(VarName, NExpr)] -> NExpr
 recAttrsE pairs = Fix $ NSet NRecursive (map (uncurry bindTo) pairs)
 
 -- | Logical negation.
@@ -193,7 +194,7 @@ mkNot :: NExpr -> NExpr
 mkNot = Fix . NUnary NNot
 
 -- -- | Dot-reference into an attribute set.
--- (!.) :: NExpr -> Text -> NExpr
+-- (!.) :: NExpr -> VarName -> NExpr
 -- (!.) = mkDot
 -- infixl 8 !.
 
@@ -230,6 +231,6 @@ infixl 1 @@
 
 infixr 1 ==>
 
-(@.) :: NExpr -> Text -> NExpr
+(@.) :: NExpr -> VarName -> NExpr
 obj @. name = Fix (NSelect obj (StaticKey name :| []) Nothing)
 infixl 2 @.

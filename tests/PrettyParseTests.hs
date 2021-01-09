@@ -15,6 +15,7 @@ import           Data.Algorithm.Diff
 import           Data.Algorithm.DiffOutput
 import           Data.Char
 import           Data.Fix
+import           Data.Interned
 import qualified Data.List.NonEmpty            as NE
 import           Data.Text                      ( Text
                                                 , pack
@@ -26,6 +27,7 @@ import           Nix.Atoms
 import           Nix.Expr
 import           Nix.Parser
 import           Nix.Pretty
+import           Nix.Utils
 import           Prettyprinter
 import           Test.Tasty
 import           Test.Tasty.Hedgehog
@@ -38,6 +40,9 @@ asciiString = Gen.list (Range.linear 1 15) Gen.lower
 asciiText :: Gen Text
 asciiText = pack <$> asciiString
 
+asciiVarName :: Gen VarName
+asciiVarName = intern <$> asciiText
+
 -- Might want to replace this instance with a constant value
 genPos :: Gen Pos
 genPos = mkPos <$> Gen.int (Range.linear 1 256)
@@ -47,7 +52,7 @@ genSourcePos = SourcePos <$> asciiString <*> genPos <*> genPos
 
 genKeyName :: Gen (NKeyName NExpr)
 genKeyName =
-  Gen.choice [DynamicKey <$> genAntiquoted genString, StaticKey <$> asciiText]
+  Gen.choice [DynamicKey <$> genAntiquoted genString, StaticKey <$> asciiVarName]
 
 genAntiquoted :: Gen a -> Gen (Antiquoted a NExpr)
 genAntiquoted gen =
@@ -75,11 +80,11 @@ genAttrPath = (NE.:|) <$> genKeyName <*> Gen.list (Range.linear 0 4) genKeyName
 
 genParams :: Gen (Params NExpr)
 genParams = Gen.choice
-  [ Param <$> asciiText
+  [ Param <$> asciiVarName
   , ParamSet
-  <$> Gen.list (Range.linear 0 10) ((,) <$> asciiText <*> Gen.maybe genExpr)
+  <$> Gen.list (Range.linear 0 10) ((,) <$> asciiVarName <*> Gen.maybe genExpr)
   <*> Gen.bool
-  <*> Gen.choice [pure Nothing, Just <$> asciiText]
+  <*> Gen.choice [pure Nothing, Just <$> asciiVarName]
   ]
 
 genAtom :: Gen NAtom
@@ -115,7 +120,7 @@ genExpr = Gen.sized $ \(Size n) -> Fix <$> if n < 2
  where
   genConstant    = NConstant <$> genAtom
   genStr         = NStr <$> genString
-  genSym         = NSym <$> asciiText
+  genSym         = NSym <$> asciiVarName
   genList        = NList <$> fairList genExpr
   genSet         = NSet NNonRecursive <$> fairList genBinding
   genRecSet      = NSet NRecursive <$> fairList genBinding

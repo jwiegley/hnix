@@ -32,12 +32,14 @@ import           Nix.Value.Monad                (demand)
 import qualified Data.List
 import qualified Data.Maybe
 import qualified Data.HashMap.Lazy
+import           Data.Interned
 import           Data.Text                      (Text)
 import qualified Data.Text
 import qualified Data.Text.IO
 import           Data.Version                   ( showVersion )
 import           Paths_hnix                     ( version )
 
+import           Control.Arrow                  ( first )
 import           Control.Monad.Catch
 import           Control.Monad.Identity
 import           Control.Monad.Reader
@@ -268,7 +270,7 @@ browse :: (MonadNix e t f m, MonadIO m)
 browse _ = do
   st <- get
   forM_ (Data.HashMap.Lazy.toList $ replCtx st) $ \(k, v) -> do
-    liftIO $ putStr $ Data.Text.unpack $ k <> " = "
+    liftIO $ putStr $ Data.Text.unpack $ unintern k <> " = "
     printValue v
 
 -- :load command
@@ -291,7 +293,7 @@ typeof
   -> Repl e t f m ()
 typeof args = do
   st <- get
-  mVal <- case Data.HashMap.Lazy.lookup line (replCtx st) of
+  mVal <- case Data.HashMap.Lazy.lookup (intern line) (replCtx st) of
     Just val -> pure $ Just val
     Nothing  -> do
       exec False line
@@ -359,7 +361,7 @@ completeFunc reversedPrev word
   , not $ null subFields
   = do
     s <- get
-    case Data.HashMap.Lazy.lookup var (replCtx s) of
+    case Data.HashMap.Lazy.lookup (intern var) (replCtx s) of
       Nothing -> pure []
       Just binding -> do
         candidates <- lift $ algebraicComplete subFields binding
@@ -377,8 +379,8 @@ completeFunc reversedPrev word
 
     pure $ listCompletion
       $ ["__includes"]
-      ++ (Data.Text.unpack <$> contextKeys)
-      ++ (Data.Text.unpack <$> shortBuiltins)
+      ++ (Data.Text.unpack . unintern <$> contextKeys)
+      ++ (Data.Text.unpack . unintern <$> shortBuiltins)
 
   where
     listCompletion = map simpleCompletion . filter (word `Data.List.isPrefixOf`)
@@ -390,14 +392,14 @@ completeFunc reversedPrev word
                       -> NValue t f m
                       -> m [Text]
     algebraicComplete subFields val =
-      let keys = fmap ("." <>) . Data.HashMap.Lazy.keys
+      let keys = map (\k -> "." <> (unintern k)) . Data.HashMap.Lazy.keys
           withMap m =
             case subFields of
               [] -> pure $ keys m
               -- Stop on last subField (we care about the keys at this level)
               [_] -> pure $ keys m
               f:fs ->
-                case Data.HashMap.Lazy.lookup f m of
+                case Data.HashMap.Lazy.lookup (intern f) m of
                   Nothing -> pure []
                   Just e ->
                     demand e

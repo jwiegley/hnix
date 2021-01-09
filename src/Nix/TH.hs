@@ -16,12 +16,14 @@ import qualified Data.Set                      as Set
 import qualified Data.Text                     as Text
 import           Data.List.NonEmpty             ( NonEmpty(..) )
 import           Data.Maybe                     ( mapMaybe )
+import           Data.Interned                  ( unintern )
 import           Language.Haskell.TH
 import           Language.Haskell.TH.Syntax     ( liftString )
 import           Language.Haskell.TH.Quote
 import           Nix.Atoms
 import           Nix.Expr
 import           Nix.Parser
+import           Nix.Utils                      ( VarName )
 
 quoteExprExp :: String -> ExpQ
 quoteExprExp s = do
@@ -120,12 +122,12 @@ instance ToExpr Float where
 
 metaExp :: Set VarName -> NExprLoc -> Maybe ExpQ
 metaExp fvs (Fix (NSym_ _ x)) | x `Set.member` fvs =
-  Just [| toExpr $(varE (mkName (Text.unpack x))) |]
+  Just [| toExpr $(varE (mkName (Text.unpack $ unintern x))) |]
 metaExp _ _ = Nothing
 
 metaPat :: Set VarName -> NExprLoc -> Maybe PatQ
 metaPat fvs (Fix (NSym_ _ x)) | x `Set.member` fvs =
-  Just (varP (mkName (Text.unpack x)))
+  Just (varP (mkName (Text.unpack $ unintern x)))
 metaPat _ _ = Nothing
 
 nix :: QuasiQuoter

@@ -26,7 +26,7 @@ instance Show (Scope a) where
 newScope :: AttrSet a -> Scope a
 newScope = Scope
 
-scopeLookup :: Text -> [Scope a] -> Maybe a
+scopeLookup :: VarName -> [Scope a] -> Maybe a
 scopeLookup key = foldr go Nothing
   where go (Scope m) rest = M.lookup key m <|> rest
 
@@ -53,7 +53,7 @@ class Scoped a m | m -> a where
   currentScopes :: m (Scopes m a)
   clearScopes :: m r -> m r
   pushScopes :: Scopes m a -> m r -> m r
-  lookupVar :: Text -> m (Maybe a)
+  lookupVar :: VarName -> m (Maybe a)
 
 currentScopesReader
   :: forall m a e . (MonadReader e m, Has e (Scopes m a)) => m (Scopes m a)
@@ -74,7 +74,7 @@ pushScopesReader
 pushScopesReader s = local (over hasLens (s <>))
 
 lookupVarReader
-  :: forall m a e . (MonadReader e m, Has e (Scopes m a)) => Text -> m (Maybe a)
+  :: forall m a e . (MonadReader e m, Has e (Scopes m a)) => VarName -> m (Maybe a)
 lookupVarReader k = do
   mres <- asks (scopeLookup k . lexicalScopes @m . view hasLens)
   case mres of

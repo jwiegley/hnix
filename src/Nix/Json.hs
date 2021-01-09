@@ -4,11 +4,13 @@
 
 module Nix.Json where
 
+import           Control.Arrow                  ( first )
 import           Control.Monad
 import           Control.Monad.Trans
 import qualified Data.Aeson                    as A
 import qualified Data.Aeson.Encoding           as A
 import qualified Data.HashMap.Lazy             as HM
+import           Data.Interned
 import qualified Data.Text                     as Text
 import qualified Data.Text.Lazy                as TL
 import qualified Data.Text.Lazy.Encoding       as TL
@@ -46,7 +48,7 @@ nvalueToJSON = \case
       <$> traverse (join . lift . flip demand (pure . nvalueToJSON)) l
   NVSet m _ -> case HM.lookup "outPath" m of
     Nothing ->
-      A.Object
+      A.Object . HM.fromList . map (first unintern) . HM.toList
         <$> traverse (join . lift . flip demand (pure . nvalueToJSON)) m
     Just outPath -> join $ lift $ demand outPath (pure . nvalueToJSON)
   NVPath p -> do

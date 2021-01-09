@@ -2,7 +2,7 @@ module Nix.Type.Type where
 
 import qualified Data.HashMap.Lazy             as M
 import           Data.Text                      ( Text )
-import           Nix.Utils                      ( AttrSet )
+import           Nix.Utils                      ( AttrSet, VarName )
 
 -- | Hindrey-Milner type interface
 
@@ -41,4 +41,4 @@ typeString = TCon "string"
 typePath = TCon "path"
 typeNull = TCon "null"
 
-type Name = Text
+type Name = VarName

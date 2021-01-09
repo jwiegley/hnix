@@ -22,6 +22,7 @@ import           NeatInterpolation (text)
 import           Nix
 import           Nix.Standard
 import           Nix.TH
+import           Nix.Utils
 import           Nix.Value.Equal
 import qualified System.Directory as D
 import           System.Environment

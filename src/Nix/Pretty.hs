@@ -8,12 +8,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeFamilies, FlexibleInstances #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Nix.Pretty where
 
+import           Control.Arrow                  ( first )
 import           Control.Applicative            ( (<|>) )
 import           Control.Monad.Free
 import           Data.Fix                       ( Fix(..), foldFix )
@@ -23,6 +26,8 @@ import qualified Data.HashSet                  as HashSet
 import           Data.List                      ( isPrefixOf
                                                 , sort
                                                 )
+import           Data.Interned                  ( intern, unintern )
+import           Data.Interned.Text
 import           Data.List.NonEmpty             ( NonEmpty(..) )
 import qualified Data.List.NonEmpty            as NE
 import           Data.Maybe                     ( isJust
@@ -138,11 +143,11 @@ prettyString (Indented _ parts) = group $ nest 2 $ vcat
   prettyPart (Antiquoted r) = "$" <> braces (withoutParens r)
 
 prettyParams :: Params (NixDoc ann) -> Doc ann
-prettyParams (Param n           ) = pretty $ unpack n
+prettyParams (Param n           ) = pretty $ unpack $ unintern n
 prettyParams (ParamSet s v mname) = prettyParamSet s v <> case mname of
   Nothing -> mempty
-  Just name | Text.null name -> mempty
-            | otherwise      -> "@" <> pretty (unpack name)
+  Just name | Text.null (unintern name) -> mempty
+            | otherwise      -> "@" <> pretty (unpack $ unintern name)
 
 prettyParamSet :: ParamSet (NixDoc ann) -> Bool -> Doc ann
 prettyParamSet args var = encloseSep
@@ -152,8 +157,8 @@ prettyParamSet args var = encloseSep
   (map prettySetArg args ++ prettyVariadic)
  where
   prettySetArg (n, maybeDef) = case maybeDef of
-    Nothing -> pretty (unpack n)
-    Just v  -> pretty (unpack n) <+> "?" <+> withoutParens v
+    Nothing -> pretty (unpack $ unintern n)
+    Just v  -> pretty (unpack $ unintern n) <+> "?" <+> withoutParens v
   prettyVariadic = [ "..." | var ]
   sep            = align (comma <> space)
 
@@ -166,9 +171,9 @@ prettyBind (Inherit s ns _p) =
 
 prettyKeyName :: NKeyName (NixDoc ann) -> Doc ann
 prettyKeyName (StaticKey "") = dquotes ""
-prettyKeyName (StaticKey key) | HashSet.member key reservedNames =
-  dquotes $ pretty $ unpack key
-prettyKeyName (StaticKey  key) = pretty . unpack $ key
+prettyKeyName (StaticKey key) | HashSet.member (unintern key) reservedNames =
+  dquotes $ pretty $ unpack $ unintern key
+prettyKeyName (StaticKey  key) = pretty . unpack . unintern $ key
 prettyKeyName (DynamicKey key) = runAntiquoted
   (DoubleQuoted [Plain "\n"])
   prettyString
@@ -283,7 +288,7 @@ exprFNixDoc = \case
         | "./" `isPrefixOf` txt  -> txt
         | "../" `isPrefixOf` txt -> txt
         | otherwise              -> "./" ++ txt
-  NSym name -> simpleExpr $ pretty (unpack name)
+  NSym name -> simpleExpr $ pretty (unpack $ unintern name)
   NLet binds body ->
     leastPrecedence
       $ group
@@ -309,13 +314,13 @@ exprFNixDoc = \case
     leastPrecedence
       $ vsep
       $ ["assert" <+> withoutParens cond <> semi, align $ withoutParens body]
-  NSynHole name -> simpleExpr $ pretty ("^" <> unpack name)
+  NSynHole name -> simpleExpr $ pretty ("^" <> unpack (unintern name))
   where recPrefix = "rec" <> space
 
 valueToExpr :: forall t f m . MonadDataContext f m => NValue t f m -> NExpr
 valueToExpr = iterNValue (\_ _ -> thk) phi
  where
-  thk = Fix . NSym . pack $ "<CYCLE>"
+  thk = Fix . NSym . intern . pack $ "<CYCLE>"
 
   phi :: NValue' t f m NExpr -> NExpr
   phi (NVConstant' a ) = Fix $ NConstant a
@@ -325,9 +330,9 @@ valueToExpr = iterNValue (\_ _ -> thk) phi
     [ NamedVar (StaticKey k :| []) v (fromMaybe nullPos (M.lookup k p))
     | (k, v) <- toList s
     ]
-  phi (NVClosure' _ _   ) = Fix . NSym . pack $ "<closure>"
+  phi (NVClosure' _ _   ) = Fix . NSym . intern . pack $ "<closure>"
   phi (NVPath' p        ) = Fix $ NLiteralPath p
-  phi (NVBuiltin' name _) = Fix . NSym . pack $ "builtins." ++ name
+  phi (NVBuiltin' name _) = Fix . NSym . intern . pack $ "builtins." ++ (Text.unpack $unintern name)
   phi _                   = error "Pattern synonyms foil completeness check"
 
   mkStr ns = Fix $ NStr $ DoubleQuoted [Plain (stringIgnoreContext ns)]
@@ -396,7 +401,7 @@ printNix = iterNValue (\_ _ -> thk) phi
     "{ "
       ++ concat
            [ check (unpack k) ++ " = " ++ v ++ "; "
-           | (k, v) <- sort $ toList s
+           | (k, v) <- sort $ map (first unintern) $ toList s
            ]
       ++ "}"
    where
@@ -408,5 +413,5 @@ printNix = iterNValue (\_ _ -> thk) phi
       where surround s = "\"" ++ s ++ "\""
   phi NVClosure'{}        = "<<lambda>>"
   phi (NVPath' fp       ) = fp
-  phi (NVBuiltin' name _) = "<<builtin " ++ name ++ ">>"
+  phi (NVBuiltin' name _) = "<<builtin " ++ show name ++ ">>"
   phi _                   = error "Pattern synonyms foil completeness check"

@@ -187,7 +187,7 @@ instance ActiveTypeVars a => ActiveTypeVars [a] where
 data TypeError
   = UnificationFail Type Type
   | InfiniteType TVar Type
-  | UnboundVariables [Text]
+  | UnboundVariables [VarName]
   | Ambigious [Constraint]
   | UnificationMismatch [Type] [Type]
   deriving (Eq, Show)
@@ -564,7 +564,7 @@ instance MonadInfer m => ToValue Bool (InferT s m) (Judgment s) where
 infer :: MonadInfer m => NExpr -> InferT s m (Judgment s)
 infer = foldFix Eval.eval
 
-inferTop :: Env -> [(Text, NExpr)] -> Either InferError Env
+inferTop :: Env -> [(VarName, NExpr)] -> Either InferError Env
 inferTop env []                = Right env
 inferTop env ((name, ex) : xs) = case inferExpr env ex of
   Left  err -> Left err

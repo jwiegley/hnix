@@ -16,6 +16,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
@@ -43,6 +44,8 @@ import           Data.Fix
 import           Data.Functor.Classes
 import           Data.Hashable
 import           Data.Hashable.Lifted
+import           Data.Interned.Text
+import           Data.Interned
 import           Data.List                      ( inits
                                                 , tails
                                                 )
@@ -56,7 +59,7 @@ import           Data.Text                      ( Text
                                                 )
 import           Data.Traversable
 import           GHC.Exts
-import           GHC.Generics
+import           GHC.Generics                 hiding ( Prefix )
 import           Language.Haskell.TH.Syntax
 import           Lens.Family2
 import           Lens.Family2.TH
@@ -68,7 +71,7 @@ import           Text.Show.Deriving
 import           Type.Reflection                ( eqTypeRep )
 import qualified Type.Reflection               as Reflection
 
-type VarName = Text
+
 
 hashAt :: VarName -> Lens' (AttrSet v) (Maybe v)
 hashAt = flip alterF
@@ -176,11 +179,17 @@ instance Serialise r => Serialise (NExprF r)
 instance IsString NExpr where
   fromString = Fix . NSym . fromString
 
+--instance Lift VarName where
+--  lift 
+
 instance Lift (Fix NExprF) where
   lift = dataToExpQ $ \b ->
     case Reflection.typeOf b `eqTypeRep` Reflection.typeRep @Text of
       Just HRefl -> Just [| pack $(liftString $ unpack b) |]
-      Nothing    -> Nothing
+      Nothing    -> 
+        case Reflection.typeOf b `eqTypeRep` Reflection.typeRep @VarName of
+          Just HRefl -> Just [| intern $ pack $ $(liftString $ unpack $ unintern b) |]
+          Nothing    -> Nothing
 
 #if MIN_VERSION_template_haskell(2,17,0)
   liftTyped = unsafeCodeCoerce . lift
@@ -536,6 +545,8 @@ instance Binary NBinaryOp
 instance Binary NRecordType
 instance Binary a => Binary (NExprF a)
 
+instance ToJSON VarName where
+  toJSON = toJSON . unintern
 instance (ToJSON v, ToJSON a) => ToJSON (Antiquoted v a)
 instance ToJSON a => ToJSON (NString a)
 instance ToJSON a => ToJSON (Binding a)
@@ -550,6 +561,7 @@ instance ToJSON NBinaryOp
 instance ToJSON NRecordType
 instance ToJSON a => ToJSON (NExprF a)
 
+instance FromJSON VarName where parseJSON = fmap (fmap intern) $ parseJSON @Text
 instance (FromJSON v, FromJSON a) => FromJSON (Antiquoted v a)
 instance FromJSON a => FromJSON (NString a)
 instance FromJSON a => FromJSON (Binding a)
@@ -581,7 +593,7 @@ class NExprAnn ann g | g -> ann where
 
 ekey
   :: NExprAnn ann g
-  => NonEmpty Text
+  => NonEmpty VarName
   -> SourcePos
   -> Lens' (Fix g) (Maybe (Fix g))
 ekey keys pos f e@(Fix x) | (NSet NNonRecursive xs, ann) <- fromNExpr x = case go xs of

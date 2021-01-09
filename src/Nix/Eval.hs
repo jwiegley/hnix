@@ -22,6 +22,7 @@ import           Data.Either                    ( isRight )
 import           Data.Fix                       ( Fix(Fix) )
 import           Data.HashMap.Lazy              ( HashMap )
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned
 import           Data.List                      ( partition )
 import           Data.List.NonEmpty             ( NonEmpty(..) )
 import           Data.Maybe                     ( fromMaybe
@@ -41,10 +42,10 @@ import           Nix.Utils
 import           Nix.Value.Monad
 
 class (Show v, Monad m) => MonadEval v m where
-  freeVariable    :: Text -> m v
-  synHole         :: Text -> m v
-  attrMissing     :: NonEmpty Text -> Maybe v -> m v
-  evaledSym       :: Text -> v -> m v
+  freeVariable    :: VarName -> m v
+  synHole         :: VarName -> m v
+  attrMissing     :: NonEmpty VarName -> Maybe v -> m v
+  evaledSym       :: VarName -> v -> m v
   evalCurPos      :: m v
   evalConstant    :: NAtom -> m v
   evalString      :: NString (m v) -> m v
@@ -182,7 +183,7 @@ evalWithAttrSet aset body = do
 attrSetAlter
   :: forall v m
    . MonadNixEval v m
-  => [Text]
+  => [VarName]
   -> SourcePos
   -> AttrSet (m v)
   -> AttrSet SourcePos
@@ -253,7 +254,7 @@ evalBinds recursive binds = do
       _ -> True
     )
 
-  go :: Scopes m v -> Binding (m v) -> m [([Text], SourcePos, m v)]
+  go :: Scopes m v -> Binding (m v) -> m [([VarName], SourcePos, m v)]
   go _ (NamedVar (StaticKey "__overrides" :| []) finalValue pos) =
     finalValue >>= fromValue >>= \(o', p') ->
           -- jww (2018-05-09): What to do with the key position here?
@@ -262,7 +263,7 @@ evalBinds recursive binds = do
       (M.toList o')
 
   go _ (NamedVar pathExpr finalValue pos) = do
-    let go :: NAttrPath (m v) -> m ([Text], SourcePos, m v)
+    let go :: NAttrPath (m v) -> m ([VarName], SourcePos, m v)
         go = \case
           h :| t -> evalSetterKeyName h >>= \case
             Nothing ->
@@ -301,7 +302,7 @@ evalBinds recursive binds = do
 
   buildResult
     :: Scopes m v
-    -> [([Text], SourcePos, m v)]
+    -> [([VarName], SourcePos, m v)]
     -> m (AttrSet v, AttrSet SourcePos)
   buildResult scope bindings = do
     (s, p) <- foldM insert (M.empty, M.empty) bindings
@@ -319,7 +320,7 @@ evalSelect
    . MonadNixEval v m
   => m v
   -> NAttrPath (m v)
-  -> m (Either (v, NonEmpty Text) (m v))
+  -> m (Either (v, NonEmpty VarName) (m v))
 evalSelect aset attr = do
   s    <- aset
   path <- traverse evalGetterKeyName attr
@@ -339,7 +340,7 @@ evalGetterKeyName
   :: forall v m
    . (MonadEval v m, FromValue NixString m v)
   => NKeyName (m v)
-  -> m Text
+  -> m VarName
 evalGetterKeyName = evalSetterKeyName >=> \case
   Just k -> pure k
   Nothing ->
@@ -350,12 +351,12 @@ evalGetterKeyName = evalSetterKeyName >=> \case
 evalSetterKeyName
   :: (MonadEval v m, FromValue NixString m v)
   => NKeyName (m v)
-  -> m (Maybe Text)
+  -> m (Maybe VarName)
 evalSetterKeyName = \case
   StaticKey k -> pure (Just k)
   DynamicKey k ->
     runAntiquoted "\n" assembleString (>>= fromValueMay) k <&> \case
-      Just ns -> Just (stringIgnoreContext ns)
+      Just ns -> Just (intern $ stringIgnoreContext ns)
       _       -> Nothing
 
 assembleString
@@ -393,7 +394,7 @@ buildArgument params arg = do
   assemble
     :: Scopes m v
     -> Bool
-    -> Text
+    -> VarName
     -> These v (Maybe (m v))
     -> Maybe (AttrSet v -> m v)
   assemble scope isVariadic k = \case

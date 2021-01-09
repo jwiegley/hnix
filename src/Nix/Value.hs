@@ -65,7 +65,7 @@ data NValueF p m r
       --   Note that 'm r' is being used here because effectively a function
       --   and its set of default arguments is "never fully evaluated". This
       --   enforces in the type that it must be re-evaluated for each call.
-    | NVBuiltinF String (p -> m r)
+    | NVBuiltinF VarName (p -> m r)
       -- ^ A builtin function is itself already in normal form. Also, it may
       --   or may not choose to evaluate its argument in the production of a
       --   result.
@@ -329,10 +329,10 @@ pattern NVSet' s x <- NValue (extract -> NVSetF s x)
 pattern NVSet s x <- Free (NVSet' s x)
 
 nvSet' :: Applicative f
-       => HashMap Text r -> HashMap Text SourcePos -> NValue' t f m r
+       => HashMap VarName r -> HashMap VarName SourcePos -> NValue' t f m r
 nvSet' s x = NValue $ pure $ NVSetF s x
 nvSet :: Applicative f
-      => HashMap Text (NValue t f m) -> HashMap Text SourcePos -> NValue t f m
+      => HashMap VarName (NValue t f m) -> HashMap VarName SourcePos -> NValue t f m
 nvSet s x = Free $ nvSet' s x
 
 pattern NVClosure' x f <- NValue (extract -> NVClosureF x f)
@@ -349,30 +349,30 @@ pattern NVBuiltin' name f <- NValue (extract -> NVBuiltinF name f)
 pattern NVBuiltin name f <- Free (NVBuiltin' name f)
 
 nvBuiltin' :: (Applicative f, Functor m)
-           => String -> (NValue t f m -> m r) -> NValue' t f m r
+           => VarName -> (NValue t f m -> m r) -> NValue' t f m r
 nvBuiltin' name f = NValue $ pure $ NVBuiltinF name f
 nvBuiltin :: (Applicative f, Functor m)
-          => String -> (NValue t f m -> m (NValue t f m)) -> NValue t f m
+          => VarName -> (NValue t f m -> m (NValue t f m)) -> NValue t f m
 nvBuiltin name f = Free $ nvBuiltin' name f
 
 builtin
   :: forall m f t
    . (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => String
+  => VarName
   -> (NValue t f m -> m (NValue t f m))
   -> m (NValue t f m)
 builtin name f = pure $ nvBuiltin name $ \a -> f a
 
 builtin2
   :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => String
+  => VarName
   -> (NValue t f m -> NValue t f m -> m (NValue t f m))
   -> m (NValue t f m)
 builtin2 name f = builtin name $ \a -> builtin name $ \b -> f a b
 
 builtin3
   :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => String
+  => VarName
   -> (  NValue t f m
      -> NValue t f m
      -> NValue t f m

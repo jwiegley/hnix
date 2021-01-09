@@ -13,7 +13,7 @@ module Nix.Effects.Derivation ( defaultDerivationStrict ) where
 
 import           Prelude                 hiding ( readFile )
 
-import           Control.Arrow                  ( first, second )
+import           Control.Arrow                  ( first, second, (***), (&&&) )
 import           Control.Monad                  ( (>=>), forM, when )
 import           Control.Monad.Writer           ( join, lift )
 import           Control.Monad.State            ( MonadState, gets, modify )
@@ -22,6 +22,7 @@ import           Data.Char                      ( isAscii, isAlphaNum )
 import qualified Data.HashMap.Lazy             as M
 import qualified Data.HashMap.Strict           as MS
 import qualified Data.HashSet                  as S
+import           Data.Interned
 import           Data.List
 import qualified Data.Map.Strict               as Map
 import           Data.Map.Strict                ( Map )
@@ -262,7 +263,7 @@ defaultDerivationStrict = fromValue @(AttrSet (NValue t f m)) >=> \s -> do
 
     let outputsWithContext = Map.mapWithKey (\out path -> makeNixStringWithSingletonContext path (StringContext drvPath (DerivationOutput out))) (outputs drv')
         drvPathWithContext = makeNixStringWithSingletonContext drvPath (StringContext drvPath AllOutputs)
-        attrSet = M.map nvStr $ M.fromList $ ("drvPath", drvPathWithContext): Map.toList outputsWithContext
+        attrSet = M.fromList $ map (intern *** nvStr) $ ("drvPath", drvPathWithContext): Map.toList outputsWithContext
     -- TODO: Add location information for all the entries.
     --              here --v
     return $ nvSet attrSet M.empty
@@ -320,7 +321,7 @@ buildDerivationWithContext drvAttrs = do
             value -> return $ Just value
           ))
 
-      env <- if useJson
+      env :: Map.Map Text Text <- if useJson
         then do
           jsonString :: NixString <- lift $ nvalueToJSONNixString $ flip nvSet M.empty $
             deleteKeys [ "args", "__ignoreNulls", "__structuredAttrs" ] attrs
@@ -328,7 +329,7 @@ buildDerivationWithContext drvAttrs = do
           return $ Map.singleton "__json" rawString
         else
           mapM (lift . coerceToString callFunc CopyToStore CoerceAny >=> extractNixString) $
-            Map.fromList $ M.toList $ deleteKeys [ "args", "__ignoreNulls" ] attrs
+            Map.fromList $ map (first unintern) $ M.toList $ deleteKeys [ "args", "__ignoreNulls" ] attrs
 
       return $ defaultDerivation { platform, builder, args, env,  hashMode, useJson
         , name = drvName
@@ -350,7 +351,7 @@ buildDerivationWithContext drvAttrs = do
     -- shortcuts to get the (forced) value of an AttrSet field
 
     getAttrOr' :: forall v a. (MonadNix e t f m, FromValue v m (NValue' t f m (NValue t f m)))
-      => Text -> m a -> (v -> WithStringContextT m a) -> WithStringContextT m a
+      => VarName -> m a -> (v -> WithStringContextT m a) -> WithStringContextT m a
     getAttrOr' n d f = case M.lookup n drvAttrs of
       Nothing -> lift d
       Just v  -> withFrame' Info (ErrorCall $ "While evaluating attribute '" ++ show n ++ "'") $
@@ -390,6 +391,6 @@ buildDerivationWithContext drvAttrs = do
 
     -- Other helpers
 
-    deleteKeys :: [Text] -> AttrSet a -> AttrSet a
+    deleteKeys :: [VarName] -> AttrSet a -> AttrSet a
     deleteKeys keys attrSet = foldl' (flip M.delete) attrSet keys
 

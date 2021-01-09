@@ -33,6 +33,7 @@ import           Control.Monad.Fix
 import           Control.Monad.Reader
 import           Data.Fix
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned
 import           Data.List
 import qualified Data.List.NonEmpty            as NE
 import           Data.Text                      ( Text )
@@ -114,7 +115,7 @@ nvClosureP p x f = addProvenance p (nvClosure x f)
 nvBuiltinP
   :: MonadCited t f m
   => Provenance m (NValue t f m)
-  -> String
+  -> VarName
   -> (NValue t f m -> m (NValue t f m))
   -> NValue t f m
 nvBuiltinP p name f = addProvenance p (nvBuiltin name f)
@@ -159,7 +160,7 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
     nverr @e @t @f
       $  ErrorCall
       $  "Undefined variable '"
-      ++ Text.unpack var
+      ++ Text.unpack (unintern var)
       ++ "'"
 
   synHole name = do
@@ -174,13 +175,13 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
     evalError @(NValue t f m)
       $  ErrorCall
       $  "Inheriting unknown attribute: "
-      ++ intercalate "." (map Text.unpack (NE.toList ks))
+      ++ intercalate "." (map (Text.unpack . unintern) (NE.toList ks))
 
   attrMissing ks (Just s) =
     evalError @(NValue t f m)
       $  ErrorCall
       $  "Could not look up attribute "
-      ++ intercalate "." (map Text.unpack (NE.toList ks))
+      ++ intercalate "." (map (Text.unpack . unintern) (NE.toList ks))
       ++ " in "
       ++ show (prettyNValue s)
 
@@ -301,7 +302,7 @@ callFunc fun arg = demand fun $ \fun' -> do
       f arg
     NVBuiltin name f -> do
       span <- currentPos
-      withFrame Info (Calling @m @(NValue t f m) name span) (f arg)
+      withFrame Info (Calling @m @(NValue t f m) (show name) span) (f arg)
     s@(NVSet m _) | Just f <- M.lookup "__functor" m -> do
       demand f $ (`callFunc` s) >=> (`callFunc` arg)
     x -> throwError $ ErrorCall $ "Attempt to call non-function: " ++ show x

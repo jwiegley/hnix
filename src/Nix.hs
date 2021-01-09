@@ -29,10 +29,11 @@ module Nix
 where
 
 import           Control.Applicative
-import           Control.Arrow                  ( second )
+import           Control.Arrow                  ( first, second )
 import           Control.Monad.Reader
 import           Data.Fix
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned
 import qualified Data.Text                     as Text
 import qualified Data.Text.Read                as Text
 import           Nix.Builtins
@@ -121,7 +122,7 @@ evaluateExpression mpath evaluator handler expr = do
 
   eval' = normalForm <=< nixEvalExpr mpath
 
-  argmap args = nvSet (M.fromList args) mempty
+  argmap args = nvSet (M.fromList $ map (first intern) args) mempty
 
 processResult
   :: forall e t f m a
@@ -148,7 +149,7 @@ processResult h val = do
         ++ "', but got: "
         ++ show v
   go (k : ks) v = demand v $ \case
-    NVSet xs _ -> case M.lookup k xs of
+    NVSet xs _ -> case M.lookup (intern k) xs of
       Nothing ->
         errorWithoutStackTrace
           $  "Set does not contain key '"

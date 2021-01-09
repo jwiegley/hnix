@@ -44,6 +44,7 @@ import           Data.Text                      ( Text
                                                 )
 import           GHC.Generics
 import           Nix.Atoms
+import           Nix.Utils
 import           Nix.Expr.Types
 import           Text.Megaparsec                ( unPos
                                                 , mkPos
@@ -180,7 +181,7 @@ nullSpan = SrcSpan nullPos nullPos
 pattern NSym_ :: SrcSpan -> VarName -> NExprLocF r
 pattern NSym_ ann x = Compose (Ann ann (NSym x))
 
-pattern NSynHole_ :: SrcSpan -> Text -> NExprLocF r
+pattern NSynHole_ :: SrcSpan -> VarName -> NExprLocF r
 pattern NSynHole_ ann x = Compose (Ann ann (NSynHole x))
 
 pattern NConstant_ :: SrcSpan -> NAtom -> NExprLocF r

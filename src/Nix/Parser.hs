@@ -64,6 +64,7 @@ import           Data.Fix                       ( Fix(..) )
 import           Data.Functor
 import           Data.HashSet                   ( HashSet )
 import qualified Data.HashSet                  as HashSet
+import           Data.Interned
 import           Data.List.NonEmpty             ( NonEmpty(..) )
 import qualified Data.List.NonEmpty            as NE
 import qualified Data.Map                      as Map
@@ -80,6 +81,7 @@ import           GHC.Generics            hiding ( Prefix )
 import           Nix.Expr                hiding ( ($>) )
 import           Nix.Expr.Strings
 import           Nix.Render
+import           Nix.Utils                      ( VarName )
 import           Prettyprinter                  ( Doc
                                                 , pretty
                                                 )
@@ -381,7 +383,7 @@ argExpr = msum [atLeft, onlyname, atRight] <* symbol ":" where
 
   -- Collects the parameters within curly braces. Returns the parameters and
   -- a boolean indicating if the parameters are variadic.
-  getParams :: Parser ([(Text, Maybe NExprLoc)], Bool)
+  getParams :: Parser ([(VarName, Maybe NExprLoc)], Bool)
   getParams = go []   where
     -- Attempt to parse `...`. If this succeeds, stop and return True.
     -- Otherwise, attempt to parse an argument, optionally with a
@@ -495,7 +497,7 @@ identifier = lexeme $ try $ do
     <$> satisfy (\x -> isAlpha x || x == '_')
     <*> takeWhileP Nothing identLetter
   guard (not (ident `HashSet.member` reservedNames))
-  pure ident
+  pure $ intern ident
  where
   identLetter x = isAlpha x || isDigit x || x == '_' || x == '\'' || x == '-'
 

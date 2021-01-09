@@ -417,6 +417,7 @@ library
     , http-client >= 0.5.14 && < 0.6 || >= 0.6.4 && < 0.7
     , http-client-tls >= 0.3.5 && < 0.4
     , http-types >= 0.12.2 && < 0.13
+    , intern
     , lens-family >= 1.2.2 && < 2.2
     , lens-family-core >= 1.2.2 && < 2.2
     , lens-family-th >= 0.5.0 && < 0.6
@@ -484,6 +485,7 @@ executable hnix
     , free
     , haskeline >= 0.8.0.0 && < 0.9
     , hnix
+    , intern
     , mtl
     , optparse-applicative
     , pretty-show
@@ -535,6 +537,7 @@ test-suite hnix-tests
     , filepath
     , hedgehog
     , hnix
+    , intern
     , megaparsec
     , mtl
     , neat-interpolation

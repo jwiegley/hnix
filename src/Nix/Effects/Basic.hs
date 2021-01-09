@@ -131,7 +131,7 @@ findPathBy finder ls name = do
   go :: Maybe FilePath -> NValue t f m -> m (Maybe FilePath)
   go p@(Just _) _ = pure p
   go Nothing l =
-    demand l $ fromValue >=> \(s :: HashMap Text (NValue t f m)) -> do
+    demand l $ fromValue >=> \(s :: HashMap VarName (NValue t f m)) -> do
       p <- resolvePath s
       demand p $ fromValue >=> \(Path path) -> case M.lookup "prefix" s of
         Nothing -> tryPath path Nothing

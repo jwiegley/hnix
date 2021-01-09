@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -7,27 +8,35 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
 
 module Nix.Utils (module Nix.Utils, module X) where
 
+import qualified Codec.Serialise
 import           Control.Arrow                  ( (&&&) )
+import           Control.DeepSeq
 import           Control.Monad                  ( (<=<) )
 import           Control.Monad.Fix              ( MonadFix(..) )
 import           Control.Monad.Free             ( Free(..) )
 import           Control.Monad.Trans.Control    ( MonadTransControl(..) )
 import qualified Data.Aeson                    as A
 import qualified Data.Aeson.Encoding           as A
+import qualified Data.Binary
+import           Data.Data
 import           Data.Fix                       ( Fix(..) )
 import           Data.Hashable                  ( Hashable )
 import           Data.HashMap.Lazy              ( HashMap )
 import qualified Data.HashMap.Lazy             as M
+import           Data.Interned.Text
+import           Data.Interned
 import           Data.List                      ( sortOn )
 import           Data.Monoid                    ( Endo )
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as Text
 import qualified Data.Vector                   as V
+import           GHC.Generics                   ( Generic )
 import           Lens.Family2                  as X
 import           Lens.Family2.Stock             ( _1
                                                 , _2
@@ -52,7 +61,7 @@ $(makeLensesBy (\n -> Just ("_" ++ n)) ''Fix)
 
 type DList a = Endo [a]
 
-type AttrSet = HashMap Text
+type AttrSet = HashMap VarName
 
 -- | F-algebra defines how to reduce the fixed-point of a functor to a
 --   value.
@@ -172,3 +181,39 @@ alterF
 alterF f k m = f (M.lookup k m) <&> \case
   Nothing -> M.delete k m
   Just v  -> M.insert k v m
+
+
+type VarName = InternedText
+
+instance Read VarName where
+  readsPrec i v = (\(t, s) -> (intern t, s)) <$> readsPrec i v
+
+
+internConstr :: Constr
+internConstr = mkConstr internedTextDataType "intern" [] Prefix
+
+internedTextDataType :: DataType
+internedTextDataType = mkDataType "Data.Interned" [internConstr]
+
+instance Data VarName where
+  gfoldl f z v = z intern `f` (unintern v)
+  toConstr _ = internConstr
+  gunfold k z c = case constrIndex c of
+    1 -> k (z intern)
+    _ -> error "gunfold"
+  dataTypeOf _ = internedTextDataType 
+  
+instance NFData InternedText where rnf !_ = ()
+
+instance Data.Binary.Binary InternedText where 
+  put = Data.Binary.put . unintern
+  get = intern <$> Data.Binary.get
+
+-- instance Generic InternedText where
+
+instance Codec.Serialise.Serialise InternedText where
+  encode =  Codec.Serialise.encode . unintern
+  decode = intern <$>  Codec.Serialise.decode @Text
+
+
+-- derive instance Data VarName
