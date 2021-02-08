@@ -87,9 +87,9 @@ renderFrame
 renderFrame (NixFrame level f)
   | Just (e :: EvalFrame m v) <- fromException f = renderEvalFrame level e
   | Just (e :: ThunkLoop) <- fromException f = renderThunkLoop level e
-  | Just (e :: ValueFrame t f m) <- fromException f = renderValueFrame level e
-  | Just (e :: NormalLoop t f m) <- fromException f = renderNormalLoop level e
-  | Just (e :: ExecFrame t f m) <- fromException f = renderExecFrame level e
+  | Just (e :: ValueFrame f m) <- fromException f = renderValueFrame level e
+  | Just (e :: NormalLoop f m) <- fromException f = renderNormalLoop level e
+  | Just (e :: ExecFrame f m) <- fromException f = renderExecFrame level e
   | Just (e :: ErrorCall) <- fromException f = pure [pretty (show e)]
   | Just (e :: SynHoleInfo m v) <- fromException f = pure [pretty (show e)]
   | otherwise = error $ "Unrecognized frame: " <> show f
@@ -161,7 +161,7 @@ renderValueFrame
   :: forall e t f m ann
    . (MonadReader e m, Has e Options, MonadFile m, MonadCitedThunks t f m)
   => NixLevel
-  -> ValueFrame t f m
+  -> ValueFrame f m
   -> m [Doc ann]
 renderValueFrame level = fmap (: []) . \case
   ForcingThunk    _t -> pure "ForcingThunk" -- jww (2019-03-18): NYI
@@ -191,7 +191,7 @@ renderValue
   => NixLevel
   -> String
   -> String
-  -> NValue t f m
+  -> NValue f m
   -> m (Doc ann)
 renderValue _level _longLabel _shortLabel v = do
   opts :: Options <- asks (view hasLens)
@@ -202,7 +202,7 @@ renderValue _level _longLabel _shortLabel v = do
 renderExecFrame
   :: (MonadReader e m, Has e Options, MonadFile m, MonadCitedThunks t f m)
   => NixLevel
-  -> ExecFrame t f m
+  -> ExecFrame f m
   -> m [Doc ann]
 renderExecFrame level = \case
   Assertion ann v ->
@@ -213,7 +213,7 @@ renderExecFrame level = \case
           )
 
 renderThunkLoop
-  :: (MonadReader e m, Has e Options, MonadFile m, Show (ThunkId m))
+  :: (MonadReader e m, Has e Options, MonadFile m, Show (Thunk m))
   => NixLevel
   -> ThunkLoop
   -> m [Doc ann]
@@ -223,7 +223,7 @@ renderThunkLoop _level = pure . (: []) . \case
 renderNormalLoop
   :: (MonadReader e m, Has e Options, MonadFile m, MonadCitedThunks t f m)
   => NixLevel
-  -> NormalLoop t f m
+  -> NormalLoop f m
   -> m [Doc ann]
 renderNormalLoop level = fmap (: []) . \case
   NormalLoop v -> do

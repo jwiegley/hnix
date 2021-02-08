@@ -10,12 +10,15 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Repl
   ( main
@@ -29,6 +32,8 @@ import           Nix.Scope
 import           Nix.Utils
 import           Nix.Value.Monad                (demand)
 
+import           Control.Comonad
+import           Data.Functor.Classes
 import qualified Data.List
 import qualified Data.Maybe
 import qualified Data.HashMap.Lazy
@@ -64,13 +69,13 @@ import qualified System.Exit
 import qualified System.IO.Error
 
 -- | Repl entry point
-main :: (MonadNix e t f m, MonadIO m, MonadMask m) =>  m ()
+main :: (MonadNix e f m, MonadIO m, MonadMask m) =>  m ()
 main = main' Nothing
 
 -- | Principled version allowing to pass initial value for context.
 --
 -- Passed value is stored in context with "input" key.
-main' :: (MonadNix e t f m, MonadIO m, MonadMask m) => Maybe (NValue t f m) -> m ()
+main' :: (MonadNix e f m, MonadIO m, MonadMask m) => Maybe (NValue f m) -> m ()
 main' iniVal = initState iniVal >>= \s -> flip evalStateT s
     $ System.Console.Repline.evalRepl
         banner
@@ -128,11 +133,14 @@ main' iniVal = initState iniVal >>= \s -> flip evalStateT s
 -- * Types
 ---------------------------------------------------------------------------------
 
-data IState t f m = IState
+data IState f m = IState
   { replIt  :: Maybe NExprLoc          -- ^ Last expression entered
-  , replCtx :: AttrSet (NValue t f m)  -- ^ Value environment
+  , replCtx :: AttrSet (NValue f m)    -- ^ Value environment
   , replCfg :: ReplConfig              -- ^ REPL configuration
-  } deriving (Eq, Show)
+  }
+
+deriving instance (Eq1 f, Eq1 m, Eq (Thunk m)) => Eq (IState f m)
+deriving instance (Comonad f, Show (Thunk m)) => Show (IState f m)
 
 data ReplConfig = ReplConfig
   { cfgDebug  :: Bool
@@ -148,7 +156,7 @@ defReplConfig = ReplConfig
   }
 
 -- | Create initial IState for REPL
-initState :: MonadNix e t f m => Maybe (NValue t f m) -> m (IState t f m)
+initState :: MonadNix e f m => Maybe (NValue f m) -> m (IState f m)
 initState mIni = do
 
   builtins <- evalText "builtins"
@@ -164,23 +172,23 @@ initState mIni = do
       , cfgValues = values opts
       }
   where
-    evalText :: (MonadNix e t f m) => Text -> m (NValue t f m)
+    evalText :: (MonadNix e f m) => Text -> m (NValue f m)
     evalText expr = case parseNixTextLoc expr of
       Failure e -> error $ "Impossible happened: Unable to parse expression - '" ++ Data.Text.unpack expr ++ "' error was " ++ show e
       Success e -> do evalExprLoc e
 
-type Repl e t f m = HaskelineT (StateT (IState t f m) m)
+type Repl e f m = HaskelineT (StateT (IState f m) m)
 
 ---------------------------------------------------------------------------------
 -- * Execution
 ---------------------------------------------------------------------------------
 
 exec
-  :: forall e t f m
-   . (MonadNix e t f m, MonadIO m)
+  :: forall e f m
+   . (MonadNix e f m, MonadIO m)
   => Bool
   -> Text
-  -> Repl e t f m (Maybe (NValue t f m))
+  -> Repl e f m (Maybe (NValue f m))
 exec update source = do
   -- Get the current interpreter state
   st <- get
@@ -206,7 +214,7 @@ exec update source = do
 
       case mVal of
         Left (NixException frames) -> do
-          lift $ lift $ liftIO . print =<< renderFrames @(NValue t f m) @t frames
+          lift $ lift $ liftIO . print =<< renderFrames @(NValue f m) frames
           pure Nothing
         Right val -> do
           -- Update the interpreter state
@@ -237,18 +245,18 @@ exec update source = do
     toAttrSet i = "{" <> i <> (if Data.Text.isSuffixOf ";" i then mempty else ";") <> "}"
 
 cmd
-  :: (MonadNix e t f m, MonadIO m)
+  :: (MonadNix e f m, MonadIO m)
   => String
-  -> Repl e t f m ()
+  -> Repl e f m ()
 cmd source = do
   mVal <- exec True (Data.Text.pack source)
   case mVal of
     Nothing -> pure ()
     Just val -> printValue val
 
-printValue :: (MonadNix e t f m, MonadIO m)
-           => NValue t f m
-           -> Repl e t f m ()
+printValue :: (MonadNix e f m, MonadIO m)
+           => NValue f m
+           -> Repl e f m ()
 printValue val = do
   cfg <- replCfg <$> get
   lift $ lift $ do
@@ -262,9 +270,9 @@ printValue val = do
 ---------------------------------------------------------------------------------
 
 -- :browse command
-browse :: (MonadNix e t f m, MonadIO m)
+browse :: (MonadNix e f m, MonadIO m)
        => String
-       -> Repl e t f m ()
+       -> Repl e f m ()
 browse _ = do
   st <- get
   forM_ (Data.HashMap.Lazy.toList $ replCtx st) $ \(k, v) -> do
@@ -273,9 +281,9 @@ browse _ = do
 
 -- :load command
 load
-  :: (MonadNix e t f m, MonadIO m)
+  :: (MonadNix e f m, MonadIO m)
   => String
-  -> Repl e t f m ()
+  -> Repl e f m ()
 load args = do
   contents <- liftIO
     $ Data.Text.IO.readFile
@@ -286,9 +294,9 @@ load args = do
 
 -- :type command
 typeof
-  :: (MonadNix e t f m, MonadIO m)
+  :: (MonadNix e f m, MonadIO m)
   => String
-  -> Repl e t f m ()
+  -> Repl e f m ()
 typeof args = do
   st <- get
   mVal <- case Data.HashMap.Lazy.lookup line (replCtx st) of
@@ -303,11 +311,11 @@ typeof args = do
   where line = Data.Text.pack args
 
 -- :quit command
-quit :: (MonadNix e t f m, MonadIO m) => a -> Repl e t f m ()
+quit :: (MonadNix e f m, MonadIO m) => a -> Repl e f m ()
 quit _ = liftIO System.Exit.exitSuccess
 
 -- :set command
-setConfig :: (MonadNix e t f m, MonadIO m) => String -> Repl e t f m ()
+setConfig :: (MonadNix e f m, MonadIO m) => String -> Repl e f m ()
 setConfig args = case words args of
   []       -> liftIO $ putStrLn "No option to set specified"
   (x:_xs)  ->
@@ -326,8 +334,8 @@ defaultMatcher =
   ]
 
 completion
-  :: (MonadNix e t f m, MonadIO m)
-  => CompleterStyle (StateT (IState t f m) m)
+  :: (MonadNix e f m, MonadIO m)
+  => CompleterStyle (StateT (IState f m) m)
 completion = System.Console.Repline.Prefix
   (completeWordWithPrev (Just '\\') separators completeFunc)
   defaultMatcher
@@ -340,15 +348,15 @@ completion = System.Console.Repline.Prefix
 -- Heavily inspired by Dhall Repl, with `algebraicComplete`
 -- adjusted to monadic variant able to `demand` thunks.
 completeFunc
-  :: forall e t f m . (MonadNix e t f m, MonadIO m)
+  :: forall e f m . (MonadNix e f m, MonadIO m)
   => String
   -> String
-  -> (StateT (IState t f m) m) [Completion]
+  -> (StateT (IState f m) m) [Completion]
 completeFunc reversedPrev word
   -- Commands
   | reversedPrev == ":"
   = pure . listCompletion
-      $ fmap helpOptionName (helpOptions :: HelpOptions e t f m)
+      $ fmap helpOptionName (helpOptions :: HelpOptions e f m)
 
   -- Files
   | any (`Data.List.isPrefixOf` word) [ "/", "./", "../", "~/" ]
@@ -383,9 +391,9 @@ completeFunc reversedPrev word
 
     notFinished x = x { isFinished = False }
 
-    algebraicComplete :: (MonadNix e t f m)
+    algebraicComplete :: (MonadNix e f m)
                       => [Text]
-                      -> NValue t f m
+                      -> NValue f m
                       -> m [Text]
     algebraicComplete subFields val =
       let keys = fmap ("." <>) . Data.HashMap.Lazy.keys
@@ -407,16 +415,16 @@ completeFunc reversedPrev word
 
 -- HelpOption inspired by Dhall Repl
 -- with `Doc` instead of String for syntax and doc
-data HelpOption e t f m = HelpOption
+data HelpOption e f m = HelpOption
   { helpOptionName     :: String
   , helpOptionSyntax   :: Doc ()
   , helpOptionDoc      :: Doc ()
-  , helpOptionFunction :: Cmd (Repl e t f m)
+  , helpOptionFunction :: Cmd (Repl e f m)
   }
 
-type HelpOptions e t f m = [HelpOption e t f m]
+type HelpOptions e f m = [HelpOption e f m]
 
-helpOptions :: (MonadNix e t f m, MonadIO m) => HelpOptions e t f m
+helpOptions :: (MonadNix e f m, MonadIO m) => HelpOptions e f m
 helpOptions =
   [ HelpOption
       "help"
@@ -513,10 +521,10 @@ renderSetOptions so =
          <>  Prettyprinter.line
          <>  Prettyprinter.indent 4 (helpSetOptionDoc h)
 
-help :: (MonadNix e t f m, MonadIO m)
-     => HelpOptions e t f m
+help :: (MonadNix e f m, MonadIO m)
+     => HelpOptions e f m
      -> String
-     -> Repl e t f m ()
+     -> Repl e f m ()
 help hs _ = do
   liftIO $ putStrLn "Available commands:\n"
   forM_ hs $ \h ->
@@ -532,6 +540,6 @@ help hs _ = do
        <>  Prettyprinter.indent 4 (helpOptionDoc h)
 
 options
-  :: (MonadNix e t f m, MonadIO m)
-  => System.Console.Repline.Options (Repl e t f m)
+  :: (MonadNix e f m, MonadIO m)
+  => System.Console.Repline.Options (Repl e f m)
 options = (\h -> (helpOptionName h, helpOptionFunction h)) <$> helpOptions

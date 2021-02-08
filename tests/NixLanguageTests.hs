@@ -21,7 +21,7 @@ import qualified Data.Text                     as Text
 import qualified Data.Text.IO                  as Text
 import           Data.Time
 import           GHC.Exts
-import           Nix.Lint
+--import           Nix.Lint
 import           Nix.Options
 import           Nix.Options.Parser
 import           Nix.Parser
@@ -115,7 +115,7 @@ assertParseFail opts file = do
   catch
       (case eres of
         Success expr -> do
-          _ <- pure $! runST $ void $ lint opts expr
+        --  _ <- pure $! runST $ void $ lint opts expr
           assertFailure
             $  "Unexpected success parsing `"
             ++ file

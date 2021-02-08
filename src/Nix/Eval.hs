@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE RecursiveDo #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
@@ -80,7 +81,7 @@ class (Show v, Monad m) => MonadEval v m where
 
 type MonadNixEval v m
   = ( MonadEval v m
-  , Scoped v m
+  , Scoped m v m
   , MonadValue v m
   , MonadFix m
   , ToValue Bool m v
@@ -126,8 +127,8 @@ eval (NEnvPath     p      ) = evalEnvPath p
 eval (NUnary op arg       ) = evalUnary op =<< arg
 
 eval (NBinary NApp fun arg) = do
-  scope <- currentScopes :: m (Scopes m v)
-  fun >>= (`evalApp` withScopes scope arg)
+  argD <- defer arg
+  fun >>= (`evalApp` pure argD)
 
 eval (NBinary op   larg rarg) = larg >>= evalBinary op ?? rarg
 
@@ -137,8 +138,7 @@ eval (NSelect aset attr alt ) = evalSelect aset attr >>= either go id
 eval (NHasAttr aset attr) = evalSelect aset attr >>= toValue . isRight
 
 eval (NList l           ) = do
-  scope <- currentScopes
-  for l (defer @v @m . withScopes @v scope) >>= toValue
+  for l defer >>= toValue
 
 eval (NSet NNonRecursive binds) =
   evalBinds False (desugarBinds (eval . NSet NNonRecursive) binds) >>= toValue
@@ -174,8 +174,7 @@ evalWithAttrSet aset body = do
   -- each time a name is looked up within the weak scope, and we want to be
   -- sure the action it evaluates is to force a thunk, so its value is only
   -- computed once.
-  scope <- currentScopes :: m (Scopes m v)
-  s     <- defer $ withScopes scope aset
+  s     <- defer aset
   let s' = demand s $ fmap fst . fromValue @(AttrSet v, AttrSet SourcePos)
   pushWeakScope s' body
 
@@ -244,8 +243,8 @@ evalBinds
   -> [Binding (m v)]
   -> m (AttrSet v, AttrSet SourcePos)
 evalBinds recursive binds = do
-  scope <- currentScopes :: m (Scopes m v)
-  buildResult scope . concat =<< mapM (go scope) (moveOverridesLast binds)
+  rec result <- buildResult . concat =<< mapM (go $ fst result) (moveOverridesLast binds)
+  pure result
  where
   moveOverridesLast = uncurry (<>) . partition
     (\case
@@ -253,7 +252,7 @@ evalBinds recursive binds = do
       _ -> True
     )
 
-  go :: Scopes m v -> Binding (m v) -> m [([Text], SourcePos, m v)]
+  go :: AttrSet v -> Binding (m v) -> m [([Text], SourcePos, m v)]
   go _ (NamedVar (StaticKey "__overrides" :| []) finalValue pos) =
     finalValue >>= fromValue >>= \(o', p') ->
           -- jww (2018-05-09): What to do with the key position here?
@@ -282,35 +281,36 @@ evalBinds recursive binds = do
       ([], _, _) -> []
       result     -> [result]
 
-  go scope (Inherit ms names pos) =
+  go scope (Inherit ms names pos) = do
     fmap catMaybes $ forM names $ evalSetterKeyName >=> \case
       Nothing  -> pure Nothing
-      Just key -> pure $ Just
-        ( [key]
-        , pos
-        , do
+      Just key -> do
+        x <- defer $ do
           mv <- case ms of
-            Nothing -> withScopes scope $ lookupVar key
+            Nothing -> lookupVar key
             Just s ->
-              s >>= fromValue @(AttrSet v, AttrSet SourcePos) >>= \(s, _) ->
-                clearScopes @v $ pushScope s $ lookupVar key
+              -- The inherit source expression is evaluated in the recursive context
+              -- if this is a recursive record
+              pushScope scope s >>= fromValue @(AttrSet v, AttrSet SourcePos) >>= \(s, _) ->
+                lookupVarScopes key (Scopes [Scope s] [])
           case mv of
             Nothing -> attrMissing (key :| []) Nothing
             Just v  -> demand v pure
-        )
+        pure $ Just
+          ( [key]
+          , pos
+          , pure x
+          )
 
   buildResult
-    :: Scopes m v
-    -> [([Text], SourcePos, m v)]
+    :: [([Text], SourcePos, m v)]
     -> m (AttrSet v, AttrSet SourcePos)
-  buildResult scope bindings = do
+  buildResult bindings = do
     (s, p) <- foldM insert (M.empty, M.empty) bindings
-    res <- if recursive then loebM (encapsulate <$> s) else traverse mkThunk s
-    pure (res, p)
+    res <- if recursive then loebM (encapsulate <$> s) else traverse defer s
+    return (res, p)
    where
-    mkThunk = defer . withScopes scope
-
-    encapsulate f attrs = mkThunk . pushScope attrs $ f
+    encapsulate f attrs = defer . pushScope attrs $ f
 
     insert (m, p) (path, pos, value) = attrSetAlter path pos m p value
 
@@ -376,27 +376,26 @@ assembleString = \case
 buildArgument
   :: forall v m . MonadNixEval v m => Params (m v) -> m v -> m (AttrSet v)
 buildArgument params arg = do
-  scope <- currentScopes :: m (Scopes m v)
+  argD <- defer arg
   case params of
-    Param name -> M.singleton name <$> defer (withScopes scope arg)
+    Param name -> pure $ M.singleton name argD
     ParamSet s isVariadic m ->
       arg >>= fromValue @(AttrSet v, AttrSet SourcePos) >>= \(args, _) -> do
         let inject = case m of
               Nothing -> id
-              Just n  -> M.insert n $ const $ defer (withScopes scope arg)
+              Just n  -> M.insert n $ const $ pure argD
         loebM
-          (inject $ M.mapMaybe id $ ialignWith (assemble scope isVariadic)
+          (inject $ M.mapMaybe id $ ialignWith (assemble isVariadic)
                                                args
                                                (M.fromList s)
           )
  where
   assemble
-    :: Scopes m v
-    -> Bool
+    :: Bool
     -> Text
     -> These v (Maybe (m v))
     -> Maybe (AttrSet v -> m v)
-  assemble scope isVariadic k = \case
+  assemble isVariadic k = \case
     That Nothing ->
       Just
         $  const
@@ -405,7 +404,7 @@ buildArgument params arg = do
         $  "Missing value for parameter: "
         <> show k
     That (Just f) ->
-      Just $ \args -> defer $ withScopes scope $ pushScope args f
+      Just $ \args -> defer $ pushScope args f
     This _
       | isVariadic
       -> Nothing
@@ -425,7 +424,7 @@ addSourcePositions f v@(Fix (Compose (Ann ann _))) =
 
 addStackFrames
   :: forall v e m a
-   . (Scoped v m, Framed e m, Typeable v, Typeable m)
+   . (Scoped m v m, Framed e m, Typeable v, Typeable m)
   => Transform NExprLocF (m a)
 addStackFrames f v = do
   scopes <- currentScopes :: m (Scopes m v)

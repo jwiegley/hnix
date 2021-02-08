@@ -38,11 +38,13 @@ import           Nix.Eval                       ( MonadEval(..) )
 import qualified Nix.Eval                      as Eval
 import           Nix.Expr
 import           Nix.Frames
-import           Nix.Fresh
+import           Nix.Fresh ()
 import           Nix.String
 import           Nix.Options
 import           Nix.Scope
 import           Nix.Thunk
+import           Nix.Thunk.StableId
+import           Nix.Fresh.Stable
 import           Nix.Thunk.Basic
 import           Nix.Utils
 import           Nix.Var
@@ -412,7 +414,7 @@ lintApp context fun arg = unpackSymbolic fun >>= \case
     (head args, ) <$> foldM (unify context) y ys
 
 newtype Lint s a = Lint
-  { runLint :: ReaderT (Context (Lint s) (Symbolic (Lint s))) (FreshIdT Int (ST s)) a }
+  { runLint :: ReaderT (Context (Lint s) (Symbolic (Lint s))) (FreshStableIdT (ST s)) a }
   deriving
     ( Functor
     , Applicative
@@ -432,8 +434,7 @@ instance MonadCatch (Lint s) where
 
 runLintM :: Options -> Lint s a -> ST s a
 runLintM opts action = do
-  i <- newVar (1 :: Int)
-  runFreshIdT i $ flip runReaderT (newContext opts) $ runLint action
+  runFreshStableIdT nil $ flip runReaderT (newContext opts) $ runLint action
 
 symbolicBaseEnv :: Monad m => m (Scopes m (Symbolic m))
 symbolicBaseEnv = pure emptyScopes

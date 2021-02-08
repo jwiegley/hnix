@@ -6,14 +6,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | Code for normalization (reduction into a normal form) of Nix expressions.
 -- Nix language allows recursion, so some expressions do not converge.
 -- And so do not converge into a normal form.
 module Nix.Normal where
 
+import           Control.Comonad
 import           Control.Monad
 import           Control.Monad.Free
 import           Control.Monad.Trans.Class
@@ -27,36 +31,37 @@ import           Nix.Thunk
 import           Nix.Value
 import           Nix.Utils
 
-newtype NormalLoop t f m = NormalLoop (NValue t f m)
-    deriving Show
+newtype NormalLoop f m = NormalLoop (NValue f m)
 
-instance MonadDataErrorContext t f m => Exception (NormalLoop t f m)
+deriving instance (Comonad f, Show (Thunk m)) => Show (NormalLoop f m)
+
+instance MonadDataErrorContext f m => Exception (NormalLoop f m)
 
 -- | Normalize the value as much as possible, leaving only detected cycles.
 normalizeValue
   :: forall e t m f
    . ( Framed e m
-     , MonadThunk t m (NValue t f m)
-     , MonadDataErrorContext t f m
-     , Ord (ThunkId m)
+     , MonadThunk m, Thunk m ~ t, ThunkValue m ~ NValue f m
+     , MonadDataErrorContext f m
+     , Ord (Thunk m)
      )
-  => (forall r . t -> (NValue t f m -> m r) -> m r)
-  -> NValue t f m
-  -> m (NValue t f m)
+  => (forall r . t -> (NValue f m -> m r) -> m r)
+  -> NValue f m
+  -> m (NValue f m)
 normalizeValue f = run . iterNValueM run go (fmap Free . sequenceNValue' run)
  where
   start = 0 :: Int
   table = mempty
 
-  run :: ReaderT Int (StateT (Set (ThunkId m)) m) r -> m r
+  run :: ReaderT Int (StateT (Set (Thunk m)) m) r -> m r
   run = (`evalStateT` table) . (`runReaderT` start)
 
   go
     :: t
-    -> (  NValue t f m
-       -> ReaderT Int (StateT (Set (ThunkId m)) m) (NValue t f m)
+    -> (  NValue f m
+       -> ReaderT Int (StateT (Set (Thunk m)) m) (NValue f m)
        )
-    -> ReaderT Int (StateT (Set (ThunkId m)) m) (NValue t f m)
+    -> ReaderT Int (StateT (Set (Thunk m)) m) (NValue f m)
   go t k = do
     b <- seen t
     if b
@@ -68,66 +73,65 @@ normalizeValue f = run . iterNValueM run go (fmap Free . sequenceNValue' run)
         lifted (lifted (f t)) $ local succ . k
 
   seen t = do
-    let tid = thunkId t
     lift $ do
-      res <- gets (member tid)
-      unless res $ modify (insert tid)
+      res <- gets (member t)
+      unless res $ modify (insert t)
       pure res
 
 normalForm
   :: ( Framed e m
-     , MonadThunk t m (NValue t f m)
-     , MonadDataErrorContext t f m
-     , HasCitations m (NValue t f m) t
-     , HasCitations1 m (NValue t f m) f
-     , Ord (ThunkId m)
+     , MonadThunk m, ThunkValue m ~ NValue f m
+     , MonadDataErrorContext f m
+     , HasCitations m (NValue f m) (Thunk m)
+     , HasCitations1 m (NValue f m) f
+     , Ord (Thunk m)
      )
-  => NValue t f m
-  -> m (NValue t f m)
+  => NValue f m
+  -> m (NValue f m)
 normalForm = fmap stubCycles . normalizeValue force
 
 normalForm_
   :: ( Framed e m
-     , MonadThunk t m (NValue t f m)
-     , MonadDataErrorContext t f m
-     , Ord (ThunkId m)
+     , MonadThunk m, ThunkValue m ~ NValue f m
+     , MonadDataErrorContext f m
+     , Ord (Thunk m)
      )
-  => NValue t f m
+  => NValue f m
   -> m ()
 normalForm_ = void <$> normalizeValue forceEff
 
 stubCycles
-  :: forall t f m
+  :: forall f m
    . ( MonadDataContext f m
-     , HasCitations m (NValue t f m) t
-     , HasCitations1 m (NValue t f m) f
+     , HasCitations m (NValue f m) (Thunk m)
+     , HasCitations1 m (NValue f m) f
      )
-  => NValue t f m
-  -> NValue t f m
+  => NValue f m
+  -> NValue f m
 stubCycles = flip iterNValue Free $ \t _ ->
   Free
     $ NValue
-    $ Prelude.foldr (addProvenance1 @m @(NValue t f m)) cyc
+    $ Prelude.foldr (addProvenance1 @m @(NValue f m)) cyc
     $ reverse
-    $ citations @m @(NValue t f m) t
+    $ citations @m @(NValue f m) t
  where
   Free (NValue cyc) = opaque
 
 removeEffects
-  :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => NValue t f m
-  -> m (NValue t f m)
+  :: (MonadThunk m, ThunkValue m ~ NValue f m, MonadDataContext f m)
+  => NValue f m
+  -> m (NValue f m)
 removeEffects =
   iterNValueM
     id
     (`queryM` pure opaque)
     (fmap Free . sequenceNValue' id)
 
-opaque :: Applicative f => NValue t f m
+opaque :: Applicative f => NValue f m
 opaque = nvStr $ makeNixStringWithoutContext "<expr>"
 
 dethunk
-  :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
+  :: (MonadThunk m, Thunk m ~ t, ThunkValue m ~ NValue f m, MonadDataContext f m)
   => t
-  -> m (NValue t f m)
+  -> m (NValue f m)
 dethunk t = queryM t (pure opaque) removeEffects

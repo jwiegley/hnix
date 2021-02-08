@@ -26,7 +26,7 @@ import qualified Data.Text.IO                  as Text
 import           Nix
 import           Nix.Convert
 import qualified Nix.Eval                      as Eval
-import           Nix.Fresh.Basic
+import           Nix.Fresh.Stable
 import           Nix.Json
 import           Nix.Options.Parser
 import           Nix.Standard
@@ -34,6 +34,7 @@ import           Nix.Thunk.Basic
 import qualified Nix.Type.Env                  as Env
 import qualified Nix.Type.Infer                as HM
 import           Nix.Utils
+import           Nix.Utils.Fix1
 import           Nix.Var
 import           Nix.Value.Monad
 import           Options.Applicative     hiding ( ParserResult(..) )
@@ -94,8 +95,9 @@ main = do
         NixException frames ->
           errorWithoutStackTrace
             .   show
-            =<< renderFrames @(StdValue (StandardT (StdIdT IO)))
-                  @(StdThunk (StandardT (StdIdT IO)))
+            =<< renderFrames
+                  @(StdValue (StandardT IO))
+                  @(StdThunk (StandardT IO) IO)
                   frames
 
       when (repl opts) $
@@ -138,7 +140,7 @@ main = do
    where
     printer
       | finder opts
-      = fromValue @(AttrSet (StdValue (StandardT (StdIdT IO)))) >=> findAttrs
+      = fromValue @(AttrSet (StdValue (StandardT IO))) >=> findAttrs
       | xml opts
       = liftIO
         .   putStrLn
@@ -159,17 +161,17 @@ main = do
       = liftIO . print . prettyNValue <=< removeEffects
      where
       findAttrs
-        :: AttrSet (StdValue (StandardT (StdIdT IO)))
-        -> StandardT (StdIdT IO) ()
+        :: AttrSet (StdValue (StandardT IO))
+        -> StandardT IO ()
       findAttrs = go ""
        where
         go prefix s = do
           xs <- forM (sortOn fst (M.toList s)) $ \(k, nv) -> case nv of
             Free v -> pure (k, Just (Free v))
-            Pure (StdThunk (extract -> Thunk _ _ ref)) -> do
+            Pure (StdThunk (Thunk _ _ ref)) -> do
               let path         = prefix ++ Text.unpack k
                   (_, descend) = filterEntry path k
-              val <- readVar @(StandardT (StdIdT IO)) ref
+              val <- readVar @(StandardT IO) ref
               case val of
                 Computed _ -> pure (k, Nothing)
                 _ | descend   -> (k, ) <$> forceEntry path nv
@@ -211,8 +213,9 @@ main = do
                 .   (k ++)
                 .   (": " ++)
                 .   show
-                =<< renderFrames @(StdValue (StandardT (StdIdT IO)))
-                      @(StdThunk (StandardT (StdIdT IO)))
+                =<< renderFrames
+                      @(StdValue (StandardT IO))
+                      @(StdThunk (StandardT IO) IO)
                       frames
               pure Nothing
 
@@ -224,8 +227,8 @@ main = do
   handleReduced
     :: (MonadThrow m, MonadIO m)
     => FilePath
-    -> (NExprLoc, Either SomeException (NValue t f m))
-    -> m (NValue t f m)
+    -> (NExprLoc, Either SomeException (NValue f m))
+    -> m (NValue f m)
   handleReduced path (expr', eres) = do
     liftIO $ do
       putStrLn $ "Wrote winnowed expression tree to " ++ path

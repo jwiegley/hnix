@@ -42,13 +42,13 @@ coerceToString
   :: ( Framed e m
      , MonadStore m
      , MonadThrow m
-     , MonadDataErrorContext t f m
-     , MonadValue (NValue t f m) m
+     , MonadDataErrorContext f m
+     , MonadValue (NValue f m) m
      )
-  => (NValue t f m -> NValue t f m -> m (NValue t f m))
+  => (NValue f m -> NValue f m -> m (NValue f m))
   -> CopyToStoreMode
   -> CoercionLevel
-  -> NValue t f m
+  -> NValue f m
   -> m NixString
 coerceToString call ctsm clevel = go
  where

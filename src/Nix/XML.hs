@@ -15,7 +15,7 @@ import           Nix.String
 import           Nix.Value
 import           Text.XML.Light
 
-toXML :: forall t f m . MonadDataContext f m => NValue t f m -> NixString
+toXML :: forall f m . MonadDataContext f m => NValue f m -> NixString
 toXML = runWithStringContext . fmap pp . iterNValue (\_ _ -> cyc) phi
  where
   cyc = pure $ mkElem "string" "value" "<expr>"
@@ -27,7 +27,7 @@ toXML = runWithStringContext . fmap pp . iterNValue (\_ _ -> cyc) phi
       . ppElement
       . (\e -> Element (unqual "expr") [] [Elem e] Nothing)
 
-  phi :: NValue' t f m (WithStringContext Element) -> WithStringContext Element
+  phi :: NValue' f m (WithStringContext Element) -> WithStringContext Element
   phi = \case
     NVConstant' a -> case a of
       NURI   t -> pure $ mkElem "string" "value" (Text.unpack t)

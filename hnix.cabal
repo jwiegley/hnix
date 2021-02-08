@@ -362,8 +362,9 @@ library
       Nix.Frames
       Nix.Fresh
       Nix.Fresh.Basic
+      Nix.Fresh.Stable
       Nix.Json
-      Nix.Lint
+      -- Nix.Lint
       Nix.Normal
       Nix.Options
       Nix.Parser
@@ -372,12 +373,14 @@ library
       Nix.Render
       Nix.Render.Frame
       Nix.Scope
+      Nix.Scope.Basic
       Nix.Standard
       Nix.String
       Nix.String.Coerce
       Nix.TH
       Nix.Thunk
       Nix.Thunk.Basic
+      Nix.Thunk.StableId
       Nix.Type.Assumption
       Nix.Type.Env
       Nix.Type.Infer
@@ -406,11 +409,13 @@ library
     , deepseq >= 1.4.3 && <1.5
     , deriving-compat >= 0.3 && < 0.6
     , directory >= 1.3.1 && < 1.4
+    , exception-transformers >= 0.4 && <0.5
     , exceptions >= 0.10.0 && < 0.11
     , filepath >= 1.4.2 && < 1.5
     , free >= 5.1 && < 5.2
     , gitrev >= 1.1.0 && < 1.4
     , hashable >= 1.2.5 && < 1.4
+    , ghc-prim >= 0.5 && <0.7
     , hashing >= 0.1.0 && < 0.2
     , hnix-store-core >= 0.4.0 && < 0.5
     , hnix-store-remote >= 0.4.0 && < 0.5

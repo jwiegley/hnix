@@ -58,9 +58,11 @@ import           Nix.Eval                       ( MonadEval(..) )
 import qualified Nix.Eval                      as Eval
 import           Nix.Expr.Types
 import           Nix.Expr.Types.Annotated
-import           Nix.Fresh
+import           Nix.Fresh ()
 import           Nix.String
 import           Nix.Scope
+import           Nix.Thunk.StableId
+import           Nix.Fresh.Stable
 import qualified Nix.Type.Assumption           as As
 import           Nix.Type.Env
 import qualified Nix.Type.Env                  as Env
@@ -222,10 +224,9 @@ runInfer' =
     . (`runReaderT` (Set.empty, emptyScopes))
     . getInfer
 
-runInfer :: (forall s . InferT s (FreshIdT Int (ST s)) a) -> Either InferError a
+runInfer :: (forall s. InferT s (FreshStableIdT (ST s)) a) -> Either InferError a
 runInfer m = runST $ do
-  i <- newVar (1 :: Int)
-  runFreshIdT i (runInfer' m)
+  runFreshStableIdT nil (runInfer' m)
 
 inferType
   :: forall s m . MonadInfer m => Env -> NExpr -> InferT s m [(Subst, Type)]
@@ -694,8 +695,8 @@ solve cs = solve' (nextSolvable cs)
     s' <- lift $ instantiate s
     solve (EqConst t s' : cs)
 
-instance Monad m => Scoped (Judgment s) (InferT s m) where
+instance Monad m => Scoped (InferT s m) (Judgment s) (InferT s m) where
   currentScopes = currentScopesReader
   clearScopes   = clearScopesReader @(InferT s m) @(Judgment s)
   pushScopes    = pushScopesReader
-  lookupVar     = lookupVarReader
+  askLookupVar  = lookupVarReader

@@ -18,6 +18,8 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE RecursiveDo #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
@@ -27,6 +29,7 @@ module Nix.Builtins (withNixContext, builtins) where
 import           Control.Comonad
 import           Control.Monad
 import           Control.Monad.Catch
+import           Control.Monad.Free
 import           Control.Monad.ListM            ( sortByM )
 import           Control.Monad.Reader           ( asks )
 import           Crypto.Hash
@@ -78,6 +81,7 @@ import           Nix.Scope
 import           Nix.String              hiding (getContext)
 import qualified Nix.String                    as NixString
 import           Nix.String.Coerce
+import           Nix.Thunk
 import           Nix.Utils
 import           Nix.Value
 import           Nix.Value.Equal
@@ -94,8 +98,8 @@ import           Text.Regex.TDFA
 
 -- | Evaluate a nix expression in the default context
 withNixContext
-  :: forall e t f m r
-   . (MonadNix e t f m, Has e Options)
+  :: forall e f m r
+   . (MonadNix e f m, Has e Options)
   => Maybe FilePath
   -> m r
   -> m r
@@ -115,12 +119,14 @@ withNixContext mpath action = do
       let ref = nvPath path
       pushScope (M.singleton "__cur_file" ref) action
 
-builtins :: (MonadNix e t f m, Scoped (NValue t f m) m)
-         => m (Scopes m (NValue t f m))
+builtins :: (MonadNix e f m, Scoped m (NValue f m) m)
+         => m (Scopes m (NValue f m))
 builtins = do
-  ref <- defer $ flip nvSet M.empty <$> buildMap
-  lst <- ([("builtins", ref)] <>) <$> topLevelBuiltins
-  pushScope (M.fromList lst) currentScopes
+  rec lst <- pushScope s $ do
+        ref <- defer $ flip nvSet M.empty <$> buildMap
+        ([("builtins", ref)] <>) <$> topLevelBuiltins
+      let s = M.fromList lst
+  pushScope s currentScopes
  where
   buildMap         = M.fromList . fmap mapping <$> builtinsList
   topLevelBuiltins = fmap mapping <$> fullBuiltinsList
@@ -137,7 +143,7 @@ data Builtin v = Builtin
     , mapping :: (Text, v)
     }
 
-builtinsList :: forall e t f m . MonadNix e t f m => m [Builtin (NValue t f m)]
+builtinsList :: forall e f m . MonadNix e f m => m [Builtin (NValue f m)]
 builtinsList = sequence
   [ do
     version <- toValue (makeNixStringWithoutContext "2.3")
@@ -193,7 +199,7 @@ builtinsList = sequence
   , add  Normal   "getEnv"           getEnv_
   , add2 Normal   "hasAttr"          hasAttr
   , add  Normal   "hasContext"       hasContext
-  , add' Normal   "hashString"       (hashString @e @t @f @m)
+  , add' Normal   "hashString"       (hashString @e @f @m)
   , add  Normal   "head"             head_
   , add  TopLevel "import"           import_
   , add2 Normal   "intersectAttrs"   intersectAttrs
@@ -267,15 +273,15 @@ builtinsList = sequence
   add2 t n v = wrap t n <$> mkThunk n (builtin2 (Text.unpack n) v)
   add3 t n v = wrap t n <$> mkThunk n (builtin3 (Text.unpack n) v)
 
-  add' :: forall a. ToBuiltin t f m a
-       => BuiltinType -> Text -> a -> m (Builtin (NValue t f m))
+  add' :: forall a. ToBuiltin f m a
+       => BuiltinType -> Text -> a -> m (Builtin (NValue f m))
   add' t n v = wrap t n <$> mkThunk n (toBuiltin (Text.unpack n) v)
 
 -- Primops
 
 derivation
-  :: forall e t f m. (MonadNix e t f m, Scoped (NValue t f m) m)
-  => m (NValue t f m)
+  :: forall e f m. (MonadNix e f m, Scoped m (NValue f m) m)
+  => m (NValue f m)
 derivation = foldFix Eval.eval $$(do
     -- This is compiled in so that we only parse it once at compile-time.
     let Success expr = parseNixText [text|
@@ -308,8 +314,8 @@ derivation = foldFix Eval.eval $$(do
   )
 
 foldNixPath
-  :: forall e t f m r
-   . MonadNix e t f m
+  :: forall e f m r
+   . MonadNix e f m
   => (FilePath -> Maybe String -> NixPathEntryType -> r -> m r)
   -> r
   -> m r
@@ -335,7 +341,7 @@ foldNixPath f z = do
     [n, p] -> f (Text.unpack p) (Just (Text.unpack n)) ty rest
     _ -> throwError $ ErrorCall $ "Unexpected entry in NIX_PATH: " <> show x
 
-nixPath :: MonadNix e t f m => m (NValue t f m)
+nixPath :: MonadNix e f m => m (NValue f m)
 nixPath = fmap nvList $ flip foldNixPath [] $ \p mn ty rest ->
   pure
     $ flip nvSet mempty ( M.fromList
@@ -354,44 +360,44 @@ nixPath = fmap nvList $ flip foldNixPath [] $ \p mn ty rest ->
       )
     : rest
 
-toString :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+toString :: MonadNix e f m => NValue f m -> m (NValue f m)
 toString = coerceToString callFunc DontCopyToStore CoerceAny >=> toValue
 
 hasAttr
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 hasAttr x y = fromValue x >>= fromStringNoContext >>= \key ->
-  fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) y
+  fromValue @(AttrSet (NValue f m), AttrSet SourcePos) y
     >>= \(aset, _) -> toValue $ M.member key aset
 
-attrsetGet :: MonadNix e t f m => Text -> AttrSet (NValue t f m) -> m (NValue t f m)
+attrsetGet :: MonadNix e f m => Text -> AttrSet (NValue f m) -> m (NValue f m)
 attrsetGet k s = case M.lookup k s of
   Just v -> pure v
   Nothing ->
     throwError $ ErrorCall $ "Attribute '" <> Text.unpack k <> "' required"
 
-hasContext :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+hasContext :: MonadNix e f m => NValue f m -> m (NValue f m)
 hasContext = toValue . stringHasContext <=< fromValue
 
 getAttr
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 getAttr x y = fromValue x >>= fromStringNoContext >>= \key ->
-  fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) y
+  fromValue @(AttrSet (NValue f m), AttrSet SourcePos) y
     >>= \(aset, _) -> attrsetGet key aset
 
 unsafeGetAttrPos
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 unsafeGetAttrPos x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (NVStr ns, NVSet _ apos) ->
     case M.lookup (stringIgnoreContext ns) apos of
@@ -406,14 +412,14 @@ unsafeGetAttrPos x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
 -- This function is a bit special in that it doesn't care about the contents
 -- of the list.
 length_
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
-length_ = toValue . (length :: [NValue t f m] -> Int) <=< fromValue
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
+length_ = toValue . (length :: [NValue f m] -> Int) <=< fromValue
 
 add_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 add_ x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (NVConstant (NInt   x), NVConstant (NInt y)  ) -> toValue (x + y :: Integer)
   (NVConstant (NFloat x), NVConstant (NInt y)  ) -> toValue (x + fromInteger y)
@@ -422,10 +428,10 @@ add_ x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (_                    , _                    ) -> throwError $ Addition x' y'
 
 mul_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 mul_ x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (NVConstant (NInt   x), NVConstant (NInt y)  ) -> toValue (x * y :: Integer)
   (NVConstant (NFloat x), NVConstant (NInt y)  ) -> toValue (x * fromInteger y)
@@ -434,10 +440,10 @@ mul_ x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (_, _) -> throwError $ Multiplication x' y'
 
 div_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 div_ x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (NVConstant (NInt x), NVConstant (NInt y)) | y /= 0 ->
     toValue (floor (fromInteger x / fromInteger y :: Double) :: Integer)
@@ -455,10 +461,10 @@ anyM p (x : xs) = do
   if q then pure True else anyM p xs
 
 any_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 any_ f = toValue <=< anyM fromValue <=< mapM (f `callFunc`) <=< fromValue
 
 allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
@@ -468,28 +474,28 @@ allM p (x : xs) = do
   if q then allM p xs else pure False
 
 all_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 all_ f = toValue <=< allM fromValue <=< mapM (f `callFunc`) <=< fromValue
 
 foldl'_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
-foldl'_ f z xs = fromValue @[NValue t f m] xs >>= foldM go z
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> NValue f m
+  -> m (NValue f m)
+foldl'_ f z xs = fromValue @[NValue f m] xs >>= foldM go z
   where go b a = f `callFunc` b >>= (`callFunc` a)
 
-head_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+head_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 head_ = fromValue >=> \case
   []    -> throwError $ ErrorCall "builtins.head: empty list"
   h : _ -> pure h
 
-tail_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+tail_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 tail_ = fromValue >=> \case
   []    -> throwError $ ErrorCall "builtins.tail: empty list"
   _ : t -> pure $ nvList t
@@ -534,7 +540,7 @@ splitVersion s = case Text.uncons s of
              x     -> VersionComponent_String x
        in  thisComponent : splitVersion rest
 
-splitVersion_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+splitVersion_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 splitVersion_ = fromValue >=> fromStringNoContext >=> \s ->
   pure
     $ nvList
@@ -551,10 +557,10 @@ compareVersions s1 s2 = mconcat
   f = uncurry compare . fromThese z z
 
 compareVersions_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 compareVersions_ t1 t2 = fromValue t1 >>= fromStringNoContext >>= \s1 ->
   fromValue t2 >>= fromStringNoContext >>= \s2 ->
     pure $ nvConstant $ NInt $ case compareVersions s1 s2 of
@@ -582,10 +588,10 @@ splitDrvName s =
     (Text.intercalate sep namePieces, Text.intercalate sep versionPieces)
 
 parseDrvName
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 parseDrvName = fromValue >=> fromStringNoContext >=> \s -> do
   let (name :: Text, version :: Text) = splitDrvName s
-  toValue @(AttrSet (NValue t f m)) $ M.fromList
+  toValue @(AttrSet (NValue f m)) $ M.fromList
     [ ( "name" :: Text
       , nvStr $ makeNixStringWithoutContext name
       )
@@ -595,11 +601,11 @@ parseDrvName = fromValue >=> fromStringNoContext >=> \s -> do
     ]
 
 match_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 match_ pat str = fromValue pat >>= fromStringNoContext >>= \p ->
   fromValue str >>= \ns -> do
         -- NOTE: Currently prim_match in nix/src/libexpr/primops.cc ignores the
@@ -621,11 +627,11 @@ match_ pat str = fromValue pat >>= fromStringNoContext >>= \p ->
       _ -> pure $ nvConstant NNull
 
 split_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 split_ pat str = fromValue pat >>= fromStringNoContext >>= \p ->
   fromValue str >>= \ns -> do
         -- NOTE: Currently prim_split in nix/src/libexpr/primops.cc ignores the
@@ -640,12 +646,12 @@ split_ pat str = fromValue pat >>= fromStringNoContext >>= \p ->
                                    haystack
 
 splitMatches
-  :: forall e t f m
-   . MonadNix e t f m
+  :: forall e f m
+   . MonadNix e f m
   => Int
   -> [[(ByteString, (Int, Int))]]
   -> ByteString
-  -> [NValue t f m]
+  -> [NValue f m]
 splitMatches _ [] haystack = [thunkStr haystack]
 splitMatches _ ([] : _) _ =
   error "Error in splitMatches: this should never happen!"
@@ -659,10 +665,10 @@ splitMatches numDropped (((_, (start, len)) : captures) : mts) haystack =
   caps           = nvList (fmap f captures)
   f (a, (s, _)) = if s < 0 then nvConstant NNull else thunkStr a
 
-thunkStr :: Applicative f => ByteString -> NValue t f m
+thunkStr :: Applicative f => ByteString -> NValue f m
 thunkStr s = nvStr (makeNixStringWithoutContext (decodeUtf8 s))
 
-substring :: forall e t f m. MonadNix e t f m => Int -> Int -> NixString -> Prim m NixString
+substring :: forall e f m. MonadNix e f m => Int -> Int -> NixString -> Prim m NixString
 substring start len str = Prim $
   if start < 0
   then throwError $ ErrorCall $ "builtins.substring: negative start position: " <> show start
@@ -672,9 +678,9 @@ substring start len str = Prim $
   take = if len < 0 then id else Text.take len
 
 attrNames
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 attrNames =
-  fromValue @(AttrSet (NValue t f m))
+  fromValue @(AttrSet (NValue f m))
     >=> fmap getDeeper
     .   toValue
     .   fmap makeNixStringWithoutContext
@@ -682,108 +688,108 @@ attrNames =
     .   M.keys
 
 attrValues
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 attrValues =
-  fromValue @(AttrSet (NValue t f m))
+  fromValue @(AttrSet (NValue f m))
     >=> toValue
     .   fmap snd
-    .   sortOn (fst @Text @(NValue t f m))
+    .   sortOn (fst @Text @(NValue f m))
     .   M.toList
 
 map_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 map_ f =
   toValue
     <=< traverse
-          ( defer @(NValue t f m)
+          ( defer @(NValue f m)
           . withFrame Debug (ErrorCall "While applying f in map:\n")
           . (f `callFunc`)
           )
-    <=< fromValue @[NValue t f m]
+    <=< fromValue @[NValue f m]
 
 mapAttrs_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
-mapAttrs_ f xs = fromValue @(AttrSet (NValue t f m)) xs >>= \aset -> do
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
+mapAttrs_ f xs = fromValue @(AttrSet (NValue f m)) xs >>= \aset -> do
   let pairs = M.toList aset
   values <- for pairs $ \(key, value) ->
-    defer @(NValue t f m)
+    defer @(NValue f m)
       $   withFrame Debug (ErrorCall "While applying f in mapAttrs:\n")
       $   callFunc ?? value
       =<< callFunc f (nvStr (makeNixStringWithoutContext key))
   toValue . M.fromList . zip (fmap fst pairs) $ values
 
 filter_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 filter_ f =
   toValue
     <=< filterM (fromValue <=< callFunc f)
     <=< fromValue
 
 catAttrs
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 catAttrs attrName xs = fromValue attrName >>= fromStringNoContext >>= \n ->
-  fromValue @[NValue t f m] xs >>= \l ->
+  fromValue @[NValue f m] xs >>= \l ->
     fmap (nvList . catMaybes)
       $ forM l
       $ fmap (M.lookup n)
       . flip demand fromValue
 
-baseNameOf :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+baseNameOf :: MonadNix e f m => NValue f m -> m (NValue f m)
 baseNameOf x = do
   ns <- coerceToString callFunc DontCopyToStore CoerceStringy x
   pure $ nvStr
     (modifyNixContents (Text.pack . takeFileName . Text.unpack) ns)
 
 bitAnd
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 bitAnd x y =
   fromValue @Integer x >>= \a -> fromValue @Integer y >>= \b -> toValue (a .&. b)
 
 bitOr
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 bitOr x y =
   fromValue @Integer x >>= \a -> fromValue @Integer y >>= \b -> toValue (a .|. b)
 
 bitXor
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 bitXor x y = fromValue @Integer x
   >>= \a -> fromValue @Integer y >>= \b -> toValue (a `xor` b)
 
 builtinsBuiltin
-  :: forall e t f m
-   . MonadNix e t f m
-  => m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => m (NValue f m)
 builtinsBuiltin = (throwError $ ErrorCall "HNix does not provide builtins.builtins at the moment. Using builtins directly should be preferred")
 
-dirOf :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+dirOf :: MonadNix e f m => NValue f m -> m (NValue f m)
 dirOf x = demand x $ \case
   NVStr ns -> pure $ nvStr
     (modifyNixContents (Text.pack . takeDirectory . Text.unpack) ns)
@@ -793,33 +799,33 @@ dirOf x = demand x $ \case
 
 -- jww (2018-04-28): This should only be a string argument, and not coerced?
 unsafeDiscardStringContext
-  :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: MonadNix e f m => NValue f m -> m (NValue f m)
 unsafeDiscardStringContext mnv = do
   ns <- fromValue mnv
   toValue $ makeNixStringWithoutContext $ stringIgnoreContext
     ns
 
 seq_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 seq_ a b = demand a $ \_ -> pure b
 
 -- | We evaluate 'a' only for its effects, so data cycles are ignored.
 deepSeq
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 deepSeq a b = b <$ normalForm_ a
 
 elem_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 elem_ x = toValue <=< anyM (valueEqM x) <=< fromValue
 
 elemAt :: [a] -> Int -> Maybe a
@@ -828,10 +834,10 @@ elemAt ls i = case drop i ls of
   a : _ -> Just a
 
 elemAt_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 elemAt_ xs n = fromValue n >>= \n' -> fromValue xs >>= \xs' ->
   case elemAt xs' n' of
     Just a -> pure a
@@ -844,11 +850,11 @@ elemAt_ xs n = fromValue n >>= \n' -> fromValue xs >>= \xs' ->
         <> show (length xs')
 
 genList
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 genList f = fromValue @Integer >=> \n -> if n >= 0
   then toValue =<< forM [0 .. n - 1] (\i -> defer $ (f `callFunc`) =<< toValue i)
   else
@@ -858,9 +864,9 @@ genList f = fromValue @Integer >=> \n -> if n >= 0
     <> show n
 
 -- We wrap values solely to provide an Ord instance for genericClosure
-newtype WValue t f m = WValue (NValue t f m)
+newtype WValue f m = WValue (NValue f m)
 
-instance Comonad f => Eq (WValue t f m) where
+instance Comonad f => Eq (WValue f m) where
   WValue (NVConstant (NFloat x)) == WValue (NVConstant (NInt y)) =
     x == fromInteger y
   WValue (NVConstant (NInt   x)) == WValue (NVConstant (NFloat y)) =
@@ -872,7 +878,7 @@ instance Comonad f => Eq (WValue t f m) where
     stringIgnoreContext x == stringIgnoreContext y
   _ == _ = False
 
-instance Comonad f => Ord (WValue t f m) where
+instance Comonad f => Ord (WValue f m) where
   WValue (NVConstant (NFloat x)) <= WValue (NVConstant (NInt y)) =
     x <= fromInteger y
   WValue (NVConstant (NInt   x)) <= WValue (NVConstant (NFloat y)) =
@@ -885,8 +891,8 @@ instance Comonad f => Ord (WValue t f m) where
   _ <= _ = False
 
 genericClosure
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
-genericClosure = fromValue @(AttrSet (NValue t f m)) >=> \s ->
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
+genericClosure = fromValue @(AttrSet (NValue f m)) >=> \s ->
   case (M.lookup "startSet" s, M.lookup "operator" s) of
     (Nothing, Nothing) ->
       throwError
@@ -902,33 +908,33 @@ genericClosure = fromValue @(AttrSet (NValue t f m)) >=> \s ->
         $ ErrorCall
         $ "builtins.genericClosure: Attribute 'operator' required"
     (Just startSet, Just operator) ->
-      demand startSet $ fromValue @[NValue t f m] >=> \ss ->
-        demand operator $ \op -> toValue @[NValue t f m] =<< snd <$> go op ss S.empty
+      demand startSet $ fromValue @[NValue f m] >=> \ss ->
+        demand operator $ \op -> toValue @[NValue f m] =<< snd <$> go op ss S.empty
  where
   go
-    :: NValue t f m
-    -> [NValue t f m]
-    -> Set (WValue t f m)
-    -> m (Set (WValue t f m), [NValue t f m])
+    :: NValue f m
+    -> [NValue f m]
+    -> Set (WValue f m)
+    -> m (Set (WValue f m), [NValue f m])
   go _  []       ks = pure (ks, [])
-  go op (t : ts) ks = demand t $ \v -> fromValue @(AttrSet (NValue t f m)) v >>= \s -> do
+  go op (t : ts) ks = demand t $ \v -> fromValue @(AttrSet (NValue f m)) v >>= \s -> do
     k <- attrsetGet "key" s
     demand k $ \k' -> do
       if S.member (WValue k') ks
         then go op ts ks
         else do
-          ys <- fromValue @[NValue t f m] =<< (op `callFunc` v)
+          ys <- fromValue @[NValue f m] =<< (op `callFunc` v)
           case S.toList ks of
             []           -> checkComparable k' k'
             WValue j : _ -> checkComparable k' j
           fmap (t :) <$> go op (ts <> ys) (S.insert (WValue k') ks)
 
 replaceStrings
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 replaceStrings tfrom tto ts = fromValue (Deeper tfrom) >>= \(nsFrom :: [NixString]) ->
   fromValue (Deeper tto) >>= \(nsTo :: [NixString]) ->
     fromValue ts >>= \(ns :: NixString) -> do
@@ -975,33 +981,33 @@ replaceStrings tfrom tto ts = fromValue (Deeper tfrom) >>= \(nsFrom :: [NixStrin
         $ NixString.getContext ns
 
 removeAttrs
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 removeAttrs set = fromValue . Deeper >=> \(nsToRemove :: [NixString]) ->
-  fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set >>= \(m, p) -> do
+  fromValue @(AttrSet (NValue f m), AttrSet SourcePos) set >>= \(m, p) -> do
     toRemove <- mapM fromStringNoContext nsToRemove
     toValue (go m toRemove, go p toRemove)
   where go = foldl' (flip M.delete)
 
 intersectAttrs
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 intersectAttrs set1 set2 =
-  fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set1 >>= \(s1, p1) ->
-    fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set2 >>= \(s2, p2) ->
+  fromValue @(AttrSet (NValue f m), AttrSet SourcePos) set1 >>= \(s1, p1) ->
+    fromValue @(AttrSet (NValue f m), AttrSet SourcePos) set2 >>= \(s2, p2) ->
       pure $ nvSet (s2 `M.intersection` s1) (p2 `M.intersection` p1)
 
 functionArgs
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 functionArgs fun = demand fun $ \case
   NVClosure p _ ->
-    toValue @(AttrSet (NValue t f m)) $ nvConstant . NBool <$> case p of
+    toValue @(AttrSet (NValue f m)) $ nvConstant . NBool <$> case p of
       Param name     -> M.singleton name False
       ParamSet s _ _ -> isJust <$> M.fromList s
   v ->
@@ -1011,10 +1017,10 @@ functionArgs fun = demand fun $ \case
       <> show v
 
 toFile
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 toFile name s = do
   name' <- fromStringNoContext =<< fromValue name
   s'    <- fromValue s
@@ -1024,10 +1030,10 @@ toFile name s = do
       sc = StringContext t DirectPath
   toValue $ makeNixStringWithSingletonContext t sc
 
-toPath :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+toPath :: MonadNix e f m => NValue f m -> m (NValue f m)
 toPath = fromValue @Path >=> toValue @Path
 
-pathExists_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+pathExists_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 pathExists_ path = demand path $ \case
   NVPath p  -> toValue =<< pathExists p
   NVStr  ns -> toValue =<< pathExists (Text.unpack (stringIgnoreContext ns))
@@ -1038,67 +1044,67 @@ pathExists_ path = demand path $ \case
       <> show v
 
 hasKind
-  :: forall a e t f m
-   . (MonadNix e t f m, FromValue a m (NValue t f m))
-  => NValue t f m
-  -> m (NValue t f m)
+  :: forall a e f m
+   . (MonadNix e f m, FromValue a m (NValue f m))
+  => NValue f m
+  -> m (NValue f m)
 hasKind = fromValueMay >=> toValue . \case
   Just (_ :: a) -> True
   _             -> False
 
 isAttrs
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
-isAttrs = hasKind @(AttrSet (NValue t f m))
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
+isAttrs = hasKind @(AttrSet (NValue f m))
 
 isList
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
-isList = hasKind @[NValue t f m]
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
+isList = hasKind @[NValue f m]
 
 isInt
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 isInt = hasKind @Int
 
 isFloat
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 isFloat = hasKind @Float
 
 isBool
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 isBool = hasKind @Bool
 
 isNull
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 isNull = hasKind @()
 
 -- isString cannot use `hasKind` because it coerces derivations to strings.
-isString :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+isString :: MonadNix e f m => NValue f m -> m (NValue f m)
 isString v = demand v $ \case
   NVStr{} -> toValue True
   _       -> toValue False
 
-isFunction :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+isFunction :: MonadNix e f m => NValue f m -> m (NValue f m)
 isFunction func = demand func $ \case
   NVClosure{} -> toValue True
   _           -> toValue False
 
-throw_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+throw_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 throw_ mnv = do
   ns <- coerceToString callFunc CopyToStore CoerceStringy mnv
   throwError . ErrorCall . Text.unpack $ stringIgnoreContext ns
 
 import_
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 import_ = scopedImport (nvSet M.empty M.empty)
 
 scopedImport
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
-scopedImport asetArg pathArg = fromValue @(AttrSet (NValue t f m)) asetArg >>= \s ->
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
+scopedImport asetArg pathArg = fromValue @(AttrSet (NValue f m)) asetArg >>= \s ->
   fromValue pathArg >>= \(Path p) -> do
-    path  <- pathToDefaultNix @t @f @m p
+    path  <- pathToDefaultNix @f @m p
     mres  <- lookupVar "__cur_file"
     path' <- case mres of
       Nothing -> do
@@ -1107,21 +1113,21 @@ scopedImport asetArg pathArg = fromValue @(AttrSet (NValue t f m)) asetArg >>= \
       Just p -> demand p $ fromValue >=> \(Path p') -> do
         traceM $ "Current file being evaluated is: " <> show p'
         pure $ takeDirectory p' </> path
-    clearScopes @(NValue t f m)
+    clearScopes
       $ withNixContext (Just path')
       $ pushScope s
-      $ importPath @t @f @m path'
+      $ importPath @f @m path'
 
-getEnv_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+getEnv_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 getEnv_ = fromValue >=> fromStringNoContext >=> \s -> do
   mres <- getEnvVar (Text.unpack s)
   toValue $ makeNixStringWithoutContext $ maybe "" Text.pack mres
 
 sort_
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 sort_ comp = fromValue >=> sortByM (cmp comp) >=> toValue
  where
   cmp f a b = do
@@ -1135,10 +1141,10 @@ sort_ comp = fromValue >=> sortByM (cmp comp) >=> toValue
           False -> EQ
 
 lessThan
-  :: MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 lessThan ta tb = demand ta $ \va -> demand tb $ \vb -> do
   let badType =
         throwError
@@ -1160,34 +1166,34 @@ lessThan ta tb = demand ta $ \va -> demand tb $ \vb -> do
     _ -> badType
 
 concatLists
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 concatLists =
-  fromValue @[NValue t f m]
-    >=> mapM (flip demand $ fromValue @[NValue t f m] >=> pure)
+  fromValue @[NValue f m]
+    >=> mapM (flip demand $ fromValue @[NValue f m] >=> pure)
     >=> toValue
     .   concat
 
 concatMap_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 concatMap_ f =
-  fromValue @[NValue t f m]
+  fromValue @[NValue f m]
     >=> traverse applyFunc
     >=> toValue . concat
   where
-    applyFunc :: NValue t f m  -> m [NValue t f m]
+    applyFunc :: NValue f m  -> m [NValue f m]
     applyFunc =  (f `callFunc`) >=> fromValue
 
 listToAttrs
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
-listToAttrs = fromValue @[NValue t f m] >=> \l ->
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
+listToAttrs = fromValue @[NValue f m] >=> \l ->
   fmap (flip nvSet M.empty . M.fromList . reverse)
     $   forM l
     $   flip demand
-    $   fromValue @(AttrSet (NValue t f m))
+    $   fromValue @(AttrSet (NValue f m))
     >=> \s -> do
           t <- attrsetGet "name" s
           demand t $ fromValue >=> \n -> do
@@ -1200,7 +1206,7 @@ listToAttrs = fromValue @[NValue t f m] >=> \l ->
 -- propagate context from the s arg
 -- | The result coming out of hashString is base16 encoded
 hashString
-  :: forall e t f m. MonadNix e t f m => NixString -> NixString -> Prim m NixString
+  :: forall e f m. MonadNix e f m => NixString -> NixString -> Prim m NixString
 hashString nsAlgo ns = Prim $ do
   algo <- fromStringNoContext nsAlgo
   let f g = pure $ modifyNixContents g ns
@@ -1224,7 +1230,7 @@ hashString nsAlgo ns = Prim $ do
         <> "expected \"md5\", \"sha1\", \"sha256\", or \"sha512\", got "
         <> show algo
 
-placeHolder :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+placeHolder :: MonadNix e f m => NValue f m -> m (NValue f m)
 placeHolder = fromValue >=> fromStringNoContext >=> \t -> do
   h <- runPrim
     (hashString (makeNixStringWithoutContext "sha256")
@@ -1245,7 +1251,7 @@ placeHolder = fromValue >=> fromStringNoContext >=> \t -> do
    where
     text h = encodeUtf8 $ stringIgnoreContext h
 
-absolutePathFromValue :: MonadNix e t f m => NValue t f m -> m FilePath
+absolutePathFromValue :: MonadNix e f m => NValue f m -> m FilePath
 absolutePathFromValue = \case
   NVStr ns -> do
     let path = Text.unpack $ stringIgnoreContext ns
@@ -1259,20 +1265,20 @@ absolutePathFromValue = \case
   NVPath path -> pure path
   v           -> throwError $ ErrorCall $ "expected a path, got " <> show v
 
-readFile_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+readFile_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 readFile_ path = demand path $
   absolutePathFromValue >=> Nix.Render.readFile >=> toValue
 
 findFile_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 findFile_ aset filePath = demand aset $ \aset' -> demand filePath $ \filePath' ->
   case (aset', filePath') of
     (NVList x, NVStr ns) -> do
-      mres <- findPath @t @f @m x (Text.unpack (stringIgnoreContext ns))
+      mres <- findPath @f @m x (Text.unpack (stringIgnoreContext ns))
       pure $ nvPath mres
     (NVList _, y) ->
       throwError $ ErrorCall $ "expected a string, got " <> show y
@@ -1288,7 +1294,7 @@ data FileType
    | FileTypeUnknown
    deriving (Show, Read, Eq, Ord)
 
-instance Convertible e t f m => ToValue FileType m (NValue t f m) where
+instance (Convertible e t f m, t ~ Thunk m) => ToValue FileType m (Free (NValue' f m) t) where
   toValue = toValue . makeNixStringWithoutContext . \case
     FileTypeRegular   -> "regular" :: Text
     FileTypeDirectory -> "directory"
@@ -1296,7 +1302,7 @@ instance Convertible e t f m => ToValue FileType m (NValue t f m) where
     FileTypeUnknown   -> "unknown"
 
 readDir_
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 readDir_ p = demand p $ \path' -> do
   path           <- absolutePathFromValue path'
   items          <- listDirectory path
@@ -1311,7 +1317,7 @@ readDir_ p = demand p $ \path' -> do
   getDeeper <$> toValue (M.fromList itemsWithTypes)
 
 fromJSON
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 fromJSON arg = demand arg $ fromValue >=> fromStringNoContext >=> \encoded ->
   case A.eitherDecodeStrict' @A.Value $ encodeUtf8 encoded of
     Left jsonError ->
@@ -1328,13 +1334,13 @@ fromJSON arg = demand arg $ fromValue >=> fromStringNoContext >=> \encoded ->
     A.Bool   b -> pure $ nvConstant $ NBool b
     A.Null     -> pure $ nvConstant NNull
 
-prim_toJSON :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+prim_toJSON :: MonadNix e f m => NValue f m -> m (NValue f m)
 prim_toJSON x = demand x $ fmap nvStr . nvalueToJSONNixString
 
-toXML_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+toXML_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 toXML_ v = demand v $ fmap (nvStr . toXML) . normalForm
 
-typeOf :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+typeOf :: MonadNix e f m => NValue f m -> m (NValue f m)
 typeOf v = demand v $ toValue . makeNixStringWithoutContext . \case
   NVConstant a -> case a of
     NURI   _ -> "string"
@@ -1351,26 +1357,26 @@ typeOf v = demand v $ toValue . makeNixStringWithoutContext . \case
   _             -> error "Pattern synonyms obscure complete patterns"
 
 tryEval
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 tryEval e = catch (demand e (pure . onSuccess)) (pure . onError)
  where
   onSuccess v = flip nvSet M.empty $ M.fromList
     [("success", nvConstant (NBool True)), ("value", v)]
 
-  onError :: SomeException -> NValue t f m
+  onError :: SomeException -> NValue f m
   onError _ = flip nvSet M.empty $ M.fromList
     [ ("success", nvConstant (NBool False))
     , ("value"  , nvConstant (NBool False))
     ]
 
 trace_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 trace_ msg action = do
-  traceEffect @t @f @m
+  traceEffect @f @m
     .   Text.unpack
     .   stringIgnoreContext
     =<< fromValue msg
@@ -1378,17 +1384,17 @@ trace_ msg action = do
 
 -- TODO: remember error context
 addErrorContext
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 addErrorContext _ action = pure action
 
 exec_
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 exec_ xs = do
-  ls <- fromValue @[NValue t f m] xs
+  ls <- fromValue @[NValue f m] xs
   xs <- traverse (coerceToString callFunc DontCopyToStore CoerceStringy) ls
   -- TODO Still need to do something with the context here
   -- See prim_exec in nix/src/libexpr/primops.cc
@@ -1396,7 +1402,7 @@ exec_ xs = do
   exec (fmap (Text.unpack . stringIgnoreContext) xs)
 
 fetchurl
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 fetchurl v = demand v $ \case
   NVSet s _ -> attrsetGet "url" s >>= demand ?? go (M.lookup "sha256" s)
   v@NVStr{} -> go Nothing v
@@ -1406,7 +1412,7 @@ fetchurl v = demand v $ \case
       $  "builtins.fetchurl: Expected URI or set, got "
       <> show v
  where
-  go :: Maybe (NValue t f m) -> NValue t f m -> m (NValue t f m)
+  go :: Maybe (NValue f m) -> NValue f m -> m (NValue f m)
   go _msha = \case
     NVStr ns -> noContextAttrs ns >>= getURL >>= \case -- msha
       Left  e -> throwError e
@@ -1423,53 +1429,53 @@ fetchurl v = demand v $ \case
     Just t -> pure t
 
 partition_
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
-partition_ f = fromValue @[NValue t f m] >=> \l -> do
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
+partition_ f = fromValue @[NValue f m] >=> \l -> do
   let match t = f `callFunc` t >>= fmap (, t) . fromValue
   selection <- traverse match l
   let (right, wrong) = partition fst selection
   let makeSide       = nvList . fmap snd
-  toValue @(AttrSet (NValue t f m))
+  toValue @(AttrSet (NValue f m))
     $ M.fromList [("right", makeSide right), ("wrong", makeSide wrong)]
 
-currentSystem :: MonadNix e t f m => m (NValue t f m)
+currentSystem :: MonadNix e f m => m (NValue f m)
 currentSystem = do
   os   <- getCurrentSystemOS
   arch <- getCurrentSystemArch
   pure $ nvStr $ makeNixStringWithoutContext (arch <> "-" <> os)
 
-currentTime_ :: MonadNix e t f m => m (NValue t f m)
+currentTime_ :: MonadNix e f m => m (NValue f m)
 currentTime_ = do
   opts :: Options <- asks (view hasLens)
   toValue @Integer $ round $ Time.utcTimeToPOSIXSeconds (currentTime opts)
 
-derivationStrict_ :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
+derivationStrict_ :: MonadNix e f m => NValue f m -> m (NValue f m)
 derivationStrict_ = derivationStrict
 
-getRecursiveSize :: (MonadIntrospect m, Applicative f) => a -> m (NValue t f m)
+getRecursiveSize :: (MonadIntrospect m, Applicative f) => a -> m (NValue f m)
 getRecursiveSize = fmap (nvConstant . NInt . fromIntegral) . recursiveSize
 
 getContext
-  :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
+  :: forall e f m . MonadNix e f m => NValue f m -> m (NValue f m)
 getContext x = demand x $ \case
   (NVStr ns) -> do
     let context =
           getNixLikeContext $ toNixLikeContext $ NixString.getContext ns
-    valued :: M.HashMap Text (NValue t f m) <- sequenceA $ M.map toValue context
+    valued :: M.HashMap Text (NValue f m) <- sequenceA $ M.map toValue context
     pure $ nvSet valued M.empty
   x ->
     throwError $ ErrorCall $ "Invalid type for builtins.getContext: " <> show x
 
 appendContext
-  :: forall e t f m
-   . MonadNix e t f m
-  => NValue t f m
-  -> NValue t f m
-  -> m (NValue t f m)
+  :: forall e f m
+   . MonadNix e f m
+  => NValue f m
+  -> NValue f m
+  -> m (NValue f m)
 appendContext x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
   (NVStr ns, NVSet attrs _) -> do
     newContextValues <- forM attrs $ \attr -> demand attr $ \case
@@ -1512,17 +1518,17 @@ appendContext x y = demand x $ \x' -> demand y $ \y' -> case (x', y') of
 newtype Prim m a = Prim { runPrim :: m a }
 
 -- | Types that support conversion to nix in a particular monad
-class ToBuiltin t f m a | a -> m where
-  toBuiltin :: String -> a -> m (NValue t f m)
+class ToBuiltin f m a | a -> m where
+  toBuiltin :: String -> a -> m (NValue f m)
 
-instance (MonadNix e t f m, ToValue a m (NValue t f m))
-         => ToBuiltin t f m (Prim m a) where
+instance (MonadNix e f m, ToValue a m (NValue f m))
+        => ToBuiltin f m (Prim m a) where
   toBuiltin _ p = toValue =<< runPrim p
 
-instance ( MonadNix e t f m
-         , FromValue a m (Deeper (NValue t f m))
-         , ToBuiltin t f m b
+instance ( MonadNix e f m
+         , FromValue a m (Deeper (NValue f m))
+         , ToBuiltin f m b
          )
-         => ToBuiltin t f m (a -> b) where
+         => ToBuiltin f m (a -> b) where
   toBuiltin name f =
     pure $ nvBuiltin name (fromValue . Deeper >=> toBuiltin name . f)

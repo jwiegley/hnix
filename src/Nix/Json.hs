@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Nix.Json where
 
@@ -22,7 +23,7 @@ import           Nix.Utils
 import           Nix.Value
 import           Nix.Value.Monad
 
-nvalueToJSONNixString :: MonadNix e t f m => NValue t f m -> m NixString
+nvalueToJSONNixString :: MonadNix e f m => NValue f m -> m NixString
 nvalueToJSONNixString =
   runWithStringContextT
     . fmap
@@ -33,7 +34,7 @@ nvalueToJSONNixString =
         )
     . nvalueToJSON
 
-nvalueToJSON :: MonadNix e t f m => NValue t f m -> WithStringContextT m A.Value
+nvalueToJSON :: MonadNix e f m => NValue f m -> WithStringContextT m A.Value
 nvalueToJSON = \case
   NVConstant (NInt   n) -> pure $ A.toJSON n
   NVConstant (NFloat n) -> pure $ A.toJSON n

@@ -5,9 +5,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
- 
+{-# LANGUAGE TypeFamilies #-}
+
 
 module Nix.Effects.Derivation ( defaultDerivationStrict ) where
 
@@ -15,6 +15,7 @@ import           Prelude                 hiding ( readFile )
 
 import           Control.Arrow                  ( first, second )
 import           Control.Monad                  ( (>=>), forM, when )
+import           Control.Monad.Catch
 import           Control.Monad.Writer           ( join, lift )
 import           Control.Monad.State            ( MonadState, gets, modify )
 
@@ -102,7 +103,7 @@ writeDerivation (drv@Derivation {inputs, name}) = do
 
 -- | Traverse the graph of inputDrvs to replace fixed output derivations with their fixed output hash.
 -- this avoids propagating changes to their .drv when the output hash stays the same.
-hashDerivationModulo :: (MonadNix e t f m, MonadState (b, MS.HashMap Text Text) m) => Derivation -> m (Store.Digest 'Store.SHA256)
+hashDerivationModulo :: (MonadNix e f m, MonadState (b, MS.HashMap Text Text) m) => Derivation -> m (Store.Digest 'Store.SHA256)
 hashDerivationModulo (Derivation {
     mFixed = Just (Store.SomeDigest (digest :: Store.Digest hashType)),
     outputs,
@@ -226,8 +227,8 @@ derivationParser = do
     _ -> (Nothing, Flat)
 
 
-defaultDerivationStrict :: forall e t f m b. (MonadNix e t f m, MonadState (b, MS.HashMap Text Text) m) => NValue t f m -> m (NValue t f m)
-defaultDerivationStrict = fromValue @(AttrSet (NValue t f m)) >=> \s -> do
+defaultDerivationStrict :: forall e f m b. (MonadNix e f m, MonadState (b, MS.HashMap Text Text) m) => NValue f m -> m (NValue f m)
+defaultDerivationStrict = fromValue @(AttrSet (NValue f m)) >=> \s -> do
     (drv, ctx) <- runWithStringContextT' $ buildDerivationWithContext s
     drvName <- makeStorePathName $ name drv
     let inputs = toStorePaths ctx
@@ -288,10 +289,10 @@ defaultDerivationStrict = fromValue @(AttrSet (NValue t f m)) >=> \s -> do
 -- | Build a derivation in a context collecting string contexts.
 -- This is complex from a typing standpoint, but it allows to perform the
 -- full computation without worrying too much about all the string's contexts.
-buildDerivationWithContext :: forall e t f m. (MonadNix e t f m) => AttrSet (NValue t f m) -> WithStringContextT m Derivation
+buildDerivationWithContext :: forall e f m. (MonadNix e f m) => AttrSet (NValue f m) -> WithStringContextT m Derivation
 buildDerivationWithContext drvAttrs = do
     -- Parse name first, so we can add an informative frame
-    drvName     <- getAttr   "name"                      $ extractNixString >=> assertDrvStoreName
+    drvName       <- getAttr  "name"                       $ extractNixString >=> assertDrvStoreName
     withFrame' Info (ErrorCall $ "While evaluating derivation " <> show drvName) $ do
 
       useJson     <- getAttrOr "__structuredAttrs" False   $ return
@@ -338,10 +339,10 @@ buildDerivationWithContext drvAttrs = do
   where
     -- common functions, lifted to WithStringContextT
 
-    demand' :: NValue t f m -> (NValue t f m -> WithStringContextT m a) -> WithStringContextT m a
+    demand' :: NValue f m -> (NValue f m -> WithStringContextT m a) -> WithStringContextT m a
     demand' v f = join $ lift $ demand v (return . f)
 
-    fromValue' :: (FromValue a m (NValue' t f m (NValue t f m)), MonadNix e t f m) => NValue t f m -> WithStringContextT m a
+    fromValue' :: (FromValue a m (NValue' f m (NValue f m)), MonadNix e f m) => NValue f m -> WithStringContextT m a
     fromValue' = lift . fromValue
 
     withFrame' :: (Framed e m, Exception s) => NixLevel -> s -> WithStringContextT m a -> WithStringContextT m a
@@ -349,20 +350,22 @@ buildDerivationWithContext drvAttrs = do
 
     -- shortcuts to get the (forced) value of an AttrSet field
 
-    getAttrOr' :: forall v a. (MonadNix e t f m, FromValue v m (NValue' t f m (NValue t f m)))
+    getAttrOr' :: forall v a. (MonadNix e f m, FromValue v m (NValue' f m (NValue f m)))
       => Text -> m a -> (v -> WithStringContextT m a) -> WithStringContextT m a
     getAttrOr' n d f = case M.lookup n drvAttrs of
       Nothing -> lift d
       Just v  -> withFrame' Info (ErrorCall $ "While evaluating attribute '" <> show n <> "'") $
                    fromValue' v >>= f
 
+    getAttrOr :: forall v a. (MonadNix e f m, FromValue v m (NValue' f m (NValue f m)))
+      => Text -> a -> (v -> WithStringContextT m a) -> WithStringContextT m a
     getAttrOr n d f = getAttrOr' n (return d) f
 
     getAttr n = getAttrOr' n (throwError $ ErrorCall $ "Required attribute '" <> show n <> "' not found.")
 
     -- Test validity for fields
 
-    assertDrvStoreName :: MonadNix e t f m => Text -> WithStringContextT m Text
+    assertDrvStoreName :: MonadNix e f m => Text -> WithStringContextT m Text
     assertDrvStoreName name = lift $ do
       let invalid c = not $ isAscii c && (isAlphaNum c || c `elem` ("+-._?=" :: String)) -- isAlphaNum allows non-ascii chars.
       let failWith reason = throwError $ ErrorCall $ "Store name " <> show name <> " " <> reason
@@ -372,17 +375,17 @@ buildDerivationWithContext drvAttrs = do
       when (".drv" `Text.isSuffixOf` name) $ failWith "is not allowed to end in '.drv'"
       return name
 
-    extractNoCtx :: MonadNix e t f m => NixString -> WithStringContextT m Text
+    extractNoCtx :: MonadNix e f m => NixString -> WithStringContextT m Text
     extractNoCtx ns = case getStringNoContext ns of
       Nothing -> lift $ throwError $ ErrorCall $ "The string " <> show ns <> " is not allowed to have a context."
       Just v -> return v
 
-    assertNonNull :: MonadNix e t f m => Text -> WithStringContextT m Text
+    assertNonNull :: MonadNix e f m => Text -> WithStringContextT m Text
     assertNonNull t = do
       when (Text.null t) $ lift $ throwError $ ErrorCall "Value must not be empty"
       return t
 
-    parseHashMode :: MonadNix e t f m => Text -> WithStringContextT m HashMode
+    parseHashMode :: MonadNix e f m => Text -> WithStringContextT m HashMode
     parseHashMode = \case
       "flat" ->      return Flat
       "recursive" -> return Recursive

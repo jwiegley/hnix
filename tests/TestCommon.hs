@@ -7,14 +7,17 @@ module TestCommon where
 
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
+import           Data.Functor.Identity
 import           Data.Text                      ( Text
                                                 , unpack
                                                 )
 import           Data.Time
 import           Nix
+import           Nix.Cited
+import           Nix.Context
 import           Nix.Exec                       ( )
 import           Nix.Standard
-import           Nix.Fresh.Basic
+import           Nix.Fresh.Stable
 import           System.Environment
 import           System.IO
 import           System.Posix.Files
@@ -22,7 +25,7 @@ import           System.Posix.Temp
 import           System.Process
 import           Test.Tasty.HUnit
 
-hnixEvalFile :: Options -> FilePath -> IO (StdValue (StandardT (StdIdT IO)))
+hnixEvalFile :: Options -> FilePath -> IO (StdValue (StandardT IO))
 hnixEvalFile opts file = do
   parseResult <- parseNixFileLoc file
   case parseResult of
@@ -36,11 +39,11 @@ hnixEvalFile opts file = do
             NixException frames ->
               errorWithoutStackTrace
                 .   show
-                =<< renderFrames @(StdValue (StandardT (StdIdT IO)))
-                      @(StdThunk (StandardT (StdIdT IO)))
+                =<< renderFrames @(StdValue (StandardT IO)) -- (StdValue (StandardT (FreshStableIdT IO)))
+                      @(StdThunk (StandardT IO) IO) -- (StdThunk (StandardT (FreshStableIdT IO)))
                       frames
 
-hnixEvalText :: Options -> Text -> IO (StdValue (StandardT (StdIdT IO)))
+hnixEvalText :: Options -> Text -> IO (NValue Identity (StandardT IO)) -- (StdValue (StandardT (FreshStableIdT IO)))
 hnixEvalText opts src = case parseNixText src of
   Failure err ->
     error
@@ -49,7 +52,7 @@ hnixEvalText opts src = case parseNixText src of
       ++ "`.\n"
       ++ show err
   Success expr ->
-    runWithBasicEffects opts $ normalForm =<< nixEvalExpr Nothing expr
+    runWithBasicEffects opts $ normalForm =<< nixEvalExpr @Context @_ @(StandardT IO) Nothing expr
 
 nixEvalString :: String -> IO String
 nixEvalString expr = do
