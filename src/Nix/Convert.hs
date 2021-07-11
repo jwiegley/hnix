@@ -205,7 +205,7 @@ instance ( Convertible e t f m
           (M.lookup "outPath" s)
       _ -> stub
 
-  fromValue = fromMayToValue $ TString NoContext
+  fromValue = fromMayToValue $ TString HasContext
 
 instance Convertible e t f m
   => FromValue ByteString m (NValue' t f m (NValue t f m)) where

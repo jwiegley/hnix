@@ -622,6 +622,10 @@ paramName :: Params r -> Maybe VarName
 paramName (Param n       ) = pure n
 paramName (ParamSet _ _ n) = n
 
+stringParts :: NString r -> [Antiquoted Text r]
+stringParts (DoubleQuoted parts) = parts
+stringParts (Indented _   parts) = parts
+
 stripPositionInfo :: NExpr -> NExpr
 stripPositionInfo = transport phi
  where

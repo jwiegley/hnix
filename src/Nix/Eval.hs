@@ -465,14 +465,9 @@ assembleString
    . (MonadEval v m, FromValue NixString m v)
   => NString (m v)
   -> m (Maybe NixString)
-assembleString =
-  fromParts .
-    \case
-      Indented   _ parts -> parts
-      DoubleQuoted parts -> parts
+assembleString = fromParts . stringParts
  where
   fromParts xs = (mconcat <$>) . sequence <$> traverse go xs
-
   go =
     runAntiquoted
       "\n"
