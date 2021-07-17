@@ -37,6 +37,9 @@ import           Control.Monad.Writer           ( WriterT(..), MonadWriter(tell)
 import qualified Data.HashMap.Lazy             as M
 import qualified Data.HashSet                  as S
 import qualified Data.Text                     as Text
+import           Nix.Expr.Types                 ( VarName(..)
+                                                , AttrSet
+                                                )
 
 
 -- * Types
@@ -46,7 +49,7 @@ import qualified Data.Text                     as Text
 -- | A Nix 'StringContext' ...
 data StringContext =
   StringContext
-    { scPath :: !Text
+    { scPath :: !VarName
     , scFlavor :: !ContextFlavor
     }
   deriving (Eq, Ord, Show, Generic)
@@ -127,8 +130,8 @@ makeNixStringWithoutContext = (`NixString` mempty)
 
 -- | Create NixString using a singleton context
 makeNixStringWithSingletonContext
-  :: Text -> StringContext -> NixString
-makeNixStringWithSingletonContext s c = NixString s $ one c
+  :: VarName -> StringContext -> NixString
+makeNixStringWithSingletonContext s c = NixString (coerce @VarName @Text s) $ one c
 
 -- | Create NixString from a Text and context
 makeNixString :: Text -> S.HashSet StringContext -> NixString
@@ -172,7 +175,7 @@ extractNixString (NixString s c) =
 
 -- this really should be 2 args, then with @toStringContexts path@ laziness it would tail recurse.
 -- for now tuple dissected internaly with laziness preservation.
-toStringContexts :: (Text, NixLikeContextValue) -> [StringContext]
+toStringContexts :: (VarName, NixLikeContextValue) -> [StringContext]
 toStringContexts ~(path, nlcv) =
   go nlcv
  where
@@ -190,7 +193,7 @@ toStringContexts ~(path, nlcv) =
     mkCtxFor = StringContext path
     mkLstCtxFor t c = mkCtxFor t : go c
 
-toNixLikeContextValue :: StringContext -> (Text, NixLikeContextValue)
+toNixLikeContextValue :: StringContext -> (VarName, NixLikeContextValue)
 toNixLikeContextValue sc =
   ( scPath sc
   , case scFlavor sc of

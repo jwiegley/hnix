@@ -158,16 +158,9 @@ nBinary (Ann s1 b) e1@(AnnE s2 _) e2@(AnnE s3 _) =
   AnnE (s1 <> s2 <> s3) $ NBinary b e1 e2
 
 nSelectLoc
-  :: NExprLoc -> Ann SrcSpan (NAttrPath NExprLoc) -> Maybe NExprLoc -> NExprLoc
-nSelectLoc e1@(AnnE s1 _) (Ann s2 ats) =
-  --  2021-05-16: NOTE: This could been rewritten into function application of @(s3, pure e2)@
-  -- if @SrcSpan@ was Monoid, which requires @SorcePos@ to be a Monoid, and upstream code prevents it.
-  -- Question upstream: https://github.com/mrkkrp/megaparsec/issues/450
-  maybe
-    (                    AnnE  s1s2        $ NSelect e1 ats   Nothing)
-    (\ e2@(AnnE s3 _) -> AnnE (s1s2 <> s3) $ NSelect e1 ats $ pure e2)
- where
-  s1s2 = s1 <> s2
+  :: Maybe NExprLoc -> NExprLoc -> Ann SrcSpan (NAttrPath NExprLoc) -> NExprLoc
+nSelectLoc Nothing e1@(AnnE s2 _) (Ann s1 ats) = AnnE (s2 <> s1) $ NSelect Nothing e1 ats
+nSelectLoc (Just e2@(AnnE s3 _)) e1@(AnnE s2 _) (Ann s1 ats) = AnnE (s3 <> s2 <> s1) $ NSelect (pure e2) e1 ats
 
 nHasAttr :: NExprLoc -> Ann SrcSpan (NAttrPath NExprLoc) -> NExprLoc
 nHasAttr e1@(AnnE s1 _) (Ann s2 ats) = AnnE (s1 <> s2) $ NHasAttr e1 ats
@@ -194,6 +187,7 @@ nullSpan = SrcSpan nullPos nullPos
 
 -- | Pattern systems for matching on NExprLocF constructions.
 
+--  2021-07-15: NOTE: Make versions of these for NExprLoc, since source code actually uses just fixed versions of these shorthands.
 pattern NConstant_ :: SrcSpan -> NAtom -> NExprLocF r
 pattern NConstant_ ann x = AnnFP ann (NConstant x)
 
@@ -221,8 +215,8 @@ pattern NUnary_ ann op x = AnnFP ann (NUnary op x)
 pattern NBinary_ :: SrcSpan -> NBinaryOp -> r -> r -> NExprLocF r
 pattern NBinary_ ann op x y = AnnFP ann (NBinary op x y)
 
-pattern NSelect_ :: SrcSpan -> r -> NAttrPath r -> Maybe r -> NExprLocF r
-pattern NSelect_ ann x p v = AnnFP ann (NSelect x p v)
+pattern NSelect_ :: SrcSpan ->  Maybe r -> r -> NAttrPath r -> NExprLocF r
+pattern NSelect_ ann v x p = AnnFP ann (NSelect v x p)
 
 pattern NHasAttr_ :: SrcSpan -> r -> NAttrPath r -> NExprLocF r
 pattern NHasAttr_ ann x p = AnnFP ann (NHasAttr x p)
@@ -242,6 +236,6 @@ pattern NWith_ ann x y = AnnFP ann (NWith x y)
 pattern NAssert_ :: SrcSpan -> r -> r -> NExprLocF r
 pattern NAssert_ ann x y = AnnFP ann (NAssert x y)
 
-pattern NSynHole_ :: SrcSpan -> Text -> NExprLocF r
+pattern NSynHole_ :: SrcSpan -> VarName -> NExprLocF r
 pattern NSynHole_ ann x = AnnFP ann (NSynHole x)
 {-# complete NConstant_, NStr_, NSym_, NList_, NSet_, NLiteralPath_, NEnvPath_, NUnary_, NBinary_, NSelect_, NHasAttr_, NAbs_, NLet_, NIf_, NWith_, NAssert_, NSynHole_ #-}

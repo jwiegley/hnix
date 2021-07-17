@@ -106,12 +106,12 @@ main' iniVal =
           (prefixedCommand : xs) | Text.head prefixedCommand == commandPrefix ->
             do
               let
-                arguments = Text.unwords xs
+                arguments = unwords xs
                 command = Text.tail prefixedCommand
               optMatcher command options arguments
-          x -> cmd $ Text.unwords x
+          x -> cmd $ unwords x
         )
-        (Text.words <$> lines f)
+        (words <$> lines f)
 
   handleMissing e
     | Error.isDoesNotExistError e = pure ""
@@ -225,7 +225,7 @@ exec update source = do
 
             -- If the result value is a set, update our context with it
             case val of
-              NVSet xs _ -> put st { replCtx = xs <> replCtx st }
+              NVSet _ xs -> put st { replCtx = xs <> replCtx st }
               _          -> pass
 
           pure $ pure val
@@ -281,11 +281,16 @@ printValue val = do
 browse :: (MonadNix e t f m, MonadIO m)
        => Text
        -> Repl e t f m ()
-browse _ = do
-  st <- get
-  for_ (Data.HashMap.Lazy.toList $ replCtx st) $ \(k, v) -> do
-    liftIO $ Text.putStr $ k <> " = "
-    printValue v
+browse _ =
+  do
+    st <- get
+    traverse_
+      (\(k, v) ->
+        do
+          liftIO $ Text.putStr $ coerce k <> " = "
+          printValue v
+      )
+      (Data.HashMap.Lazy.toList $ replCtx st)
 
 -- | @:load@ command
 load
@@ -313,7 +318,7 @@ typeof args = do
     maybe
       (exec False line)
       (pure . pure)
-      (Data.HashMap.Lazy.lookup line (replCtx st))
+      (Data.HashMap.Lazy.lookup (coerce line) (replCtx st))
 
   traverse_ printValueType mVal
 
@@ -332,12 +337,14 @@ quit _ = liftIO Exit.exitSuccess
 -- | @:set@ command
 setConfig :: (MonadNix e t f m, MonadIO m) => Text -> Repl e t f m ()
 setConfig args =
-  case Text.words args of
-    []       -> liftIO $ Text.putStrLn "No option to set specified"
-    (x:_xs)  ->
+  list
+    (liftIO $ Text.putStrLn "No option to set specified")
+    (\ (x:_xs)  ->
       case filter ((==x) . helpSetOptionName) helpSetOptions of
         [opt] -> modify (\s -> s { replCfg = helpSetOptionFunction opt (replCfg s) })
         _     -> liftIO $ Text.putStrLn "No such option"
+    )
+    $ words args
 
 
 -- * Interactive Shell
@@ -396,14 +403,14 @@ completeFunc reversedPrev word
                     candidates
                   )
         )
-        (Data.HashMap.Lazy.lookup var (replCtx s))
+        (Data.HashMap.Lazy.lookup (coerce var) (replCtx s))
 
   -- Builtins, context variables
   | otherwise =
     do
       s <- get
       let contextKeys = Data.HashMap.Lazy.keys (replCtx s)
-          (Just (NVSet builtins _)) = Data.HashMap.Lazy.lookup "builtins" (replCtx s)
+          (Just (NVSet _ builtins)) = Data.HashMap.Lazy.lookup "builtins" (replCtx s)
           shortBuiltins = Data.HashMap.Lazy.keys builtins
 
       pure $ listCompletion $ toString <$>
@@ -437,10 +444,10 @@ completeFunc reversedPrev word
                    (("." <> f) <>)
                    . algebraicComplete fs <=< demand
                 )
-                (Data.HashMap.Lazy.lookup f m)
+                (Data.HashMap.Lazy.lookup (coerce f) m)
       in
       case val of
-        NVSet xs _ -> withMap xs
+        NVSet _ xs -> withMap (Data.HashMap.Lazy.mapKeys coerce xs)
         _          -> stub
 
 -- | HelpOption inspired by Dhall Repl

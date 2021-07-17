@@ -5,9 +5,7 @@ module Nix.Type.Type where
 
 import           Prelude                 hiding ( Type, TVar )
 import           Data.Foldable                  ( foldr1 )
-import           Nix.Utils                      ( AttrSet )
-
-type Name = Text
+import           Nix.Expr.Types                 ( AttrSet )
 
 -- | Hindrey-Milner type interface
 

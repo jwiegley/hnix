@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
@@ -143,10 +144,9 @@ nixSelect term =
     -> NExprLoc
   build t mexpr =
     maybe
-      id
-      (\ expr t -> (uncurry $ nSelectLoc t) expr)
-      mexpr
       t
+      (\ (a, m) -> (`nSelectLoc` t) m a)
+      mexpr
 
 nixSelector :: Parser (Ann SrcSpan (NAttrPath NExprLoc))
 nixSelector =
@@ -186,10 +186,10 @@ nixToplevelForm = keywords <+> nixLambda <+> nixExpr
   keywords = nixLet <+> nixIf <+> nixAssert <+> nixWith
 
 nixSym :: Parser NExprLoc
-nixSym = annotateLocation1 $ mkSymF <$> identifier
+nixSym = annotateLocation1 $ mkSymF . coerce <$> identifier
 
 nixSynHole :: Parser NExprLoc
-nixSynHole = annotateLocation1 $ mkSynHoleF <$> (char '^' *> identifier)
+nixSynHole = annotateLocation1 $ mkSynHoleF . coerce <$> (char '^' *> identifier)
 
 nixInt :: Parser NExprLoc
 nixInt = annotateLocation1 (mkIntF <$> integer <?> "integer")
@@ -264,7 +264,7 @@ nixLet = annotateLocation1
       (reserved "in" *> nixToplevelForm)
   -- Let expressions `let {..., body = ...}' are just desugared
   -- into `(rec {..., body = ...}).body'.
-  letBody    = (\x -> NSelect x (StaticKey "body" :| mempty) Nothing) <$> aset
+  letBody    = (\x -> NSelect Nothing x (StaticKey "body" :| mempty)) <$> aset
   aset       = annotateLocation1 $ NSet Recursive <$> braces nixBinders
 
 nixIf :: Parser NExprLoc
@@ -416,7 +416,7 @@ argExpr =
 
   -- Collects the parameters within curly braces. Returns the parameters and
   -- a boolean indicating if the parameters are variadic.
-  getParams :: Parser ([(Text, Maybe NExprLoc)], Bool)
+  getParams :: Parser (ParamSet NExprLoc, Bool)
   getParams = go mempty
    where
     -- Attempt to parse `...`. If this succeeds, stop and return True.
@@ -517,9 +517,9 @@ reserved :: Text -> Parser ()
 reserved n =
   lexeme $ try $ string n *> lookAhead (void (satisfy reservedEnd) <|> eof)
 
-identifier :: Parser Text
+identifier :: Parser VarName
 identifier = lexeme $ try $ do
-  ident <-
+  (coerce -> ident) <-
     liftA2 cons
       (satisfy (\x -> isAlpha x || x == '_'))
       (takeWhileP mempty identLetter)
@@ -558,7 +558,7 @@ integer = lexeme Lexer.decimal
 float :: Parser Double
 float = lexeme Lexer.float
 
-reservedNames :: HashSet Text
+reservedNames :: HashSet VarName
 reservedNames =
   HashSet.fromList
     ["let", "in", "if", "then", "else", "assert", "with", "rec", "inherit"]

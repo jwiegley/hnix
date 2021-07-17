@@ -203,9 +203,9 @@ reduce (NBinary_ bann op larg rarg) =
 --   1. The selected expr is indeed a set.
 --   2. The selection AttrPath is a list of StaticKeys.
 --   3. The selected AttrPath exists in the set.
-reduce base@(NSelect_ _ _ attrs _)
+reduce base@(NSelect_ _ _ _ attrs)
   | sAttrPath $ NE.toList attrs = do
-    (NSelect_ _ aset attrs _) <- sequence base
+    (NSelect_ _ _ aset attrs) <- sequence base
     inspectSet (unFix aset) attrs
   | otherwise = sId
  where
@@ -337,7 +337,7 @@ type Flagged f = Fix (FlaggedF f)
 flagExprLoc :: (MonadIO n, Traversable f) => Fix f -> n (Flagged f)
 flagExprLoc = foldFixM $ \x -> do
   flag <- liftIO $ newIORef False
-  pure $ Fix $ FlaggedF (flag, x)
+  pure $ coerce (flag, x)
 
 -- stripFlags :: Functor f => Flagged f -> Fix f
 -- stripFlags = foldFix $ Fix . snd . flagged
@@ -378,8 +378,8 @@ pruneTree opts =
           (`NLet` body)
           (mapMaybe pruneBinding binds)
 
-    NSelect (Just aset) attr alt ->
-      pure $ NSelect aset (pruneKeyName <$> attr) $ join alt
+    NSelect alt (Just aset) attr ->
+      pure $ NSelect (join alt) aset $ pruneKeyName <$> attr
 
     -- These are the only short-circuiting binary operators
     NBinary NAnd (Just (AnnE _ larg)) _ -> pure larg

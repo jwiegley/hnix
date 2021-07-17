@@ -14,6 +14,7 @@ import           Nix.String
 import           Nix.Utils
 import           Nix.Value
 import           Nix.Value.Monad
+import           Nix.Expr.Types
 
 nvalueToJSONNixString :: MonadNix e t f m => NValue t f m -> m NixString
 nvalueToJSONNixString =
@@ -35,17 +36,18 @@ nvalueToJSON = \case
   NVConstant NNull      -> pure   A.Null
   NVStr      ns         -> A.toJSON <$> extractNixString ns
   NVList l -> A.Array . V.fromList <$> traverse intoJson l
-  NVSet m _ ->
+  NVSet _ m ->
     maybe
-      (A.Object <$> traverse intoJson m)
+      (A.Object <$> traverse intoJson (HM.mapKeys (coerce @VarName @Text) m))
       intoJson
       (HM.lookup "outPath" m)
   NVPath p ->
     do
-      fp <- lift $ unStorePath <$> addPath p
-      addSingletonStringContext $ StringContext (toText fp) DirectPath
+      fp <- lift $ coerce <$> addPath p
+      addSingletonStringContext $ StringContext (fromString fp) DirectPath
       pure $ A.toJSON fp
   v -> lift $ throwError $ CoercionToJson v
 
  where
+  intoJson :: MonadNix e t f m => NValue t f m -> WithStringContextT m A.Value
   intoJson nv = join $ lift $ nvalueToJSON <$> demand nv

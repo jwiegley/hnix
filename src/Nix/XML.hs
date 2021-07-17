@@ -54,7 +54,7 @@ toXML = runWithStringContext . fmap pp . iterNValueByDiscardWith cyc phi
             "list"
             (Elem <$> els)
 
-    NVSet' s _ ->
+    NVSet' _ s ->
       do
         kvs <- sequence s
         pure $

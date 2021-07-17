@@ -18,9 +18,10 @@ import           Prelude                 hiding ( Type
                                                 , empty
                                                 )
 
+import           Nix.Expr
 import           Nix.Type.Type
 
-newtype Assumption = Assumption { assumptions :: [(Name, Type)] }
+newtype Assumption = Assumption { assumptions :: [(VarName, Type)] }
   deriving (Eq, Show)
 
 -- We pretend that Assumptions can be inconsistent (nonunique keys),
@@ -33,25 +34,25 @@ instance Monoid Assumption where
   mempty = empty
 
 instance One Assumption where
-  type OneItem Assumption = (Name, Type)
+  type OneItem Assumption = (VarName, Type)
   one (x, y) = Assumption [(x, y)]
 
 empty :: Assumption
 empty = Assumption mempty
 
-extend :: Assumption -> (Name, Type) -> Assumption
+extend :: Assumption -> (VarName, Type) -> Assumption
 extend (Assumption a) (x, s) =
   Assumption $
     (x, s) : a
 
-remove :: Assumption -> Name -> Assumption
+remove :: Assumption -> VarName -> Assumption
 remove (Assumption a) var =
   Assumption $
     filter
       (\(n, _) -> n /= var)
       a
 
-lookup :: Name -> Assumption -> [Type]
+lookup :: VarName -> Assumption -> [Type]
 lookup key (Assumption a) =
   snd <$>
     filter
@@ -65,8 +66,8 @@ merge (Assumption a) (Assumption b) =
 mergeAssumptions :: [Assumption] -> Assumption
 mergeAssumptions = foldl' (<>) mempty
 
-singleton :: Name -> Type -> Assumption
+singleton :: VarName -> Type -> Assumption
 singleton x y = Assumption [(x, y)]
 
-keys :: Assumption -> [Name]
+keys :: Assumption -> [VarName]
 keys (Assumption a) = fst <$> a

@@ -53,7 +53,7 @@ data NTypeF (m :: Type -> Type) r
   = TConstant [TAtom]
   | TStr
   | TList r
-  | TSet (Maybe (HashMap Text r))
+  | TSet (Maybe (AttrSet r))
   | TClosure (Params ())
   | TPath
   | TBuiltin Text (Symbolic m -> m r)
@@ -273,9 +273,9 @@ instance ToValue [Symbolic m] m (Symbolic m) where
 
 instance FromValue NixString m (Symbolic m) where
 
-instance FromValue (AttrSet (Symbolic m), AttrSet SourcePos) m (Symbolic m) where
+instance FromValue (AttrSet (Symbolic m), PositionSet) m (Symbolic m) where
 
-instance ToValue (AttrSet (Symbolic m), AttrSet SourcePos) m (Symbolic m) where
+instance ToValue (AttrSet (Symbolic m), PositionSet) m (Symbolic m) where
 
 instance (MonadThunkId m, MonadAtomicRef m, MonadCatch m)
   => MonadValue (Symbolic m) m where
@@ -297,7 +297,7 @@ instance (MonadThunkId m, MonadAtomicRef m, MonadCatch m)
 
 
 instance MonadLint e m => MonadEval (Symbolic m) m where
-  freeVariable var = symerr $ "Undefined variable '" <> var <> "'"
+  freeVariable var = symerr $ "Undefined variable '" <> coerce var <> "'"
 
   attrMissing ks ms =
     evalError @(Symbolic m) $ ErrorCall $ toString $
@@ -306,7 +306,7 @@ instance MonadLint e m => MonadEval (Symbolic m) m where
         (\ s ->  "Could not look up attribute " <> attr <> " in " <> show s)
         ms
    where
-    attr = Text.intercalate "." (NE.toList ks)
+    attr = Text.intercalate "." $ NE.toList $ coerce <$> ks
 
   evalCurPos = do
     f <- mkSymbolic [TPath]
@@ -428,25 +428,29 @@ lintApp
   -> Symbolic m
   -> m (Symbolic m)
   -> m (HashMap VarName (Symbolic m), Symbolic m)
-lintApp context fun arg = unpackSymbolic fun >>= \case
-  NAny ->
-    throwError $ ErrorCall "Cannot apply something not known to be a function"
-  NMany xs -> do
-    (args, ys) <- fmap unzip $ forM xs $ \case
-      TClosure _params -> arg >>= unpackSymbolic >>= \case
-        NAny -> do
-          error "NYI"
+lintApp context fun arg =
+  (\case
+    NAny ->
+      throwError $ ErrorCall "Cannot apply something not known to be a function"
+    NMany xs -> do
+      (args, ys) <- fmap unzip $ forM xs $ \case
+        TClosure _params ->
+          (\case
+            NAny -> do
+              error "NYI"
 
-        NMany [TSet (Just _)] -> do
-          error "NYI"
+            NMany [TSet (Just _)] -> do
+              error "NYI"
 
-        NMany _ -> throwError $ ErrorCall "NYI: lintApp NMany not set"
-      TBuiltin _ _f -> throwError $ ErrorCall "NYI: lintApp builtin"
-      TSet _m       -> throwError $ ErrorCall "NYI: lintApp Set"
-      _x            -> throwError $ ErrorCall "Attempt to call non-function"
+            NMany _ -> throwError $ ErrorCall "NYI: lintApp NMany not set"
+          ) =<< unpackSymbolic =<< arg
+        TBuiltin _ _f -> throwError $ ErrorCall "NYI: lintApp builtin"
+        TSet _m       -> throwError $ ErrorCall "NYI: lintApp Set"
+        _x            -> throwError $ ErrorCall "Attempt to call non-function"
 
-    y <- everyPossible
-    (head args, ) <$> foldM (unify context) y ys
+      y <- everyPossible
+      (head args, ) <$> foldM (unify context) y ys
+  ) =<< unpackSymbolic fun
 
 newtype Lint s a = Lint
   { runLint :: ReaderT (Context (Lint s) (Symbolic (Lint s))) (FreshIdT Int (ST s)) a }
@@ -462,10 +466,10 @@ newtype Lint s a = Lint
     )
 
 instance MonadThrow (Lint s) where
-  throwM e = Lint $ ReaderT $ \_ -> throw e
+  throwM e = Lint $ ReaderT $ const (throw e)
 
 instance MonadCatch (Lint s) where
-  catch _m _h = Lint $ ReaderT $ \_ -> fail "Cannot catch in 'Lint s'"
+  catch _m _h = Lint $ ReaderT $ const (fail "Cannot catch in 'Lint s'")
 
 runLintM :: Options -> Lint s a -> ST s a
 runLintM opts action = do

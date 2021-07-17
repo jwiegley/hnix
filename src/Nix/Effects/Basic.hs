@@ -126,16 +126,16 @@ findPathBy
 findPathBy finder ls name = do
   mpath <- foldM go mempty ls
   maybe
-    (throwError $ ErrorCall $ "file '" <> name <> "' was not found in the Nix search path (add it's using $NIX_PATH or -I)")
+    (throwError $ ErrorCall $ "file ''" <> name <> "'' was not found in the Nix search path (add it's using $NIX_PATH or -I)")
     pure
     mpath
  where
-  go :: Maybe FilePath -> NValue t f m -> m (Maybe FilePath)
+  go :: MonadNix e t f m => Maybe FilePath -> NValue t f m -> m (Maybe FilePath)
   go mp =
     maybe
       (\ nv ->
         do
-          (s :: HashMap Text (NValue t f m)) <- fromValue =<< demand nv
+          (s :: HashMap VarName (NValue t f m)) <- fromValue =<< demand nv
           p <- resolvePath s
           nvpath <- demand p
           (Path path) <- fromValue nvpath
@@ -179,7 +179,7 @@ fetchTarball
   :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
 fetchTarball =
   \case
-    NVSet s _ ->
+    NVSet _ s ->
       maybe
         (throwError $ ErrorCall "builtins.fetchTarball: Missing url attribute")
         (go (M.lookup "sha256" s) <=< demand)

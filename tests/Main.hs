@@ -2,7 +2,6 @@
 
 module Main where
 
-import           Prelude hiding (lookupEnv)
 import           Relude.Unsafe (read)
 import qualified Control.Exception as Exc
 import           GHC.Err (errorWithoutStackTrace)
@@ -25,7 +24,7 @@ import qualified PrettyTests
 import qualified ReduceExprTests
 import qualified PrettyParseTests
 import           System.Directory
-import           System.Environment (setEnv, lookupEnv)
+import           System.Environment (setEnv)
 import           System.FilePath.Glob
 import           System.Posix.Files
 import           Test.Tasty

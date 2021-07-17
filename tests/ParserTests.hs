@@ -222,7 +222,7 @@ case_inherit_selector_syntax_mistakes =
 
 case_int_list =
   checks
-    ( mkList $ mkInt <$> [ i | i <- [1,2,3] ]
+    ( mkList $ mkInt <$> [1,2,3]
     , "[1 2 3]"
     )
 
@@ -286,10 +286,11 @@ case_lambda_or_uri_syntax_mistakes =
 
 case_lambda_pattern =
   checks
-    ( mkFunction (fixed args mempty) $ var "b"
+    ( mkFunction (fixed args Nothing) $ var "b"
     , "{b, c ? 1}: b"
+    -- Fix (NAbs (ParamSet [("b",Nothing),("c",Just (Fix (NConstant (NInt 1))))] False Nothing) (Fix (NSym "b")))
     )
-    ( mkFunction (fixed args2 mempty) $ var "b"
+    ( mkFunction (fixed args2 Nothing) $ var "b"
     , "{ b ? x: x  }: b"
     )
     ( mkFunction (fixed args $ pure "a") $ var "b"
@@ -301,7 +302,7 @@ case_lambda_pattern =
     ( mkFunction (variadic vargs $ pure "a") $ var "c"
     , "{b,c?1,...}@a: c"
     )
-    ( mkFunction (variadic mempty mempty) $ mkInt 1
+    ( mkFunction (variadic mempty Nothing) $ mkInt 1
     , "{...}: 1"
     )
  where
@@ -492,18 +493,15 @@ case_indented_string_escape =
 
 case_select =
   checks
-    ( Fix $ NSelect (var "a")
-        (StaticKey "e" :| [StaticKey "di", StaticKey "f"])
-        Nothing
+    ( Fix $ NSelect Nothing (var "a") (StaticKey "e" :| [StaticKey "di", StaticKey "f"])
     , "a .  e .di. f"
     )
-    ( Fix $ NSelect (var "a")
+    ( Fix $ NSelect (pure mkNull) (var "a")
         (StaticKey "e" :| [StaticKey "d"])
-        (pure mkNull)
     , "a.e . d    or null"
     )
-    ( Fix $ NSelect emptySet
-        (DynamicKey (Plain (DoubleQuoted mempty)) :| mempty) (pure mkNull)
+    ( Fix $ NSelect (pure mkNull) emptySet
+        (DynamicKey (Plain (DoubleQuoted mempty)) :| mempty)
     , "{}.\"\"or null"
     )
     ( Fix $ NBinary NConcat
@@ -533,7 +531,7 @@ case_select_path =
     ( emptySet @@ mkRelPath "./def"
     , "{}./def"
     )
-    ( Fix (NSelect emptySet (DynamicKey (Plain $ DoubleQuoted mempty) :| mempty) Nothing) @@ mkRelPath "./def"
+    ( Fix (NSelect Nothing emptySet (DynamicKey (Plain $ DoubleQuoted mempty) :| mempty)) @@ mkRelPath "./def"
     , "{}.\"\"./def"
     )
 

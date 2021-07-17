@@ -5,6 +5,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
@@ -32,6 +33,7 @@ import           Data.Data
 import           Data.Fix
 import           Data.Functor.Classes
 import           Data.Hashable.Lifted
+import qualified Data.HashMap.Lazy             as MapL
 import qualified Data.List.NonEmpty            as NE
 import qualified Text.Show
 import           Data.Traversable
@@ -102,6 +104,10 @@ instance FromJSON Pos where
   parseJSON = fmap mkPos . parseJSON
 instance FromJSON SourcePos
 
+-- | Holds file positionng information for abstrations.
+-- A type synonym for @HashMap VarName SourcePos@.
+type PositionSet = HashMap VarName SourcePos
+
 
 -- * Components of Nix expressions
 
@@ -111,10 +117,24 @@ instance FromJSON SourcePos
 --   * Types in this section
 --   * Fixpoint nature
 
-type VarName = Text
+newtype VarName = VarName Text
+  deriving
+    ( Eq, Ord, Generic
+    , Typeable, Data, NFData, Serialise, Binary, ToJSON, FromJSON
+    , Show, Read, Hashable
+    )
 
+instance IsString VarName where
+  fromString = coerce . fromString @Text
+
+instance ToString VarName where
+  toString = toString @Text . coerce
 
 -- ** @Params@
+
+--  2021-07-16: NOTE: Should replace @ParamSet@ List
+-- | > Hashmap VarName -- type synonym
+type AttrSet = HashMap VarName
 
 -- This uses an association list because nix XML serialization preserves the
 -- order of the param set.
@@ -510,14 +530,14 @@ data NExprF r
   --
   -- > NBinary NPlus x y                           ~  x + y
   -- > NBinary NApp  f x                           ~  f x
-  | NSelect !r !(NAttrPath r) !(Maybe r)
+  | NSelect !(Maybe r) !r !(NAttrPath r)
   --  2021-05-15: NOTE: Default value should be first argument to leverage partial application.
   -- Cascading change diff is not that big.
   -- ^ Dot-reference into an attribute set, optionally providing an
   -- alternative if the key doesn't exist.
   --
-  -- > NSelect s (x :| []) Nothing                 ~  s.x
-  -- > NSelect s (x :| []) (pure y)                ~  s.x or y
+  -- > NSelect Nothing  s (x :| [])                ~  s.x
+  -- > NSelect (pure y) s (x :| [])                ~  s.x or y
   | NHasAttr !r !(NAttrPath r)
   -- ^ Ask if a set contains a given attribute path.
   --
@@ -615,7 +635,19 @@ hashAt
 #else
 hashAt :: VarName -> Lens' (AttrSet v) (Maybe v)
 #endif
-hashAt = flip alterF
+hashAt = alterF
+ where
+  alterF
+    :: (Functor f)
+    => VarName
+    -> (Maybe v -> f (Maybe v))
+    -> AttrSet v
+    -> f (AttrSet v)
+  alterF (coerce -> k) f m =
+    maybe
+      (MapL.delete k m)
+      (\ v -> MapL.insert k v m)
+      <$> f (MapL.lookup k m)
 
 -- | Get the name out of the parameter (there might be none).
 paramName :: Params r -> Maybe VarName
@@ -649,7 +681,7 @@ class NExprAnn ann g | g -> ann where
 
 ekey
   :: NExprAnn ann g
-  => NonEmpty Text
+  => NonEmpty VarName
   -> SourcePos
   -> Lens' (Fix g) (Maybe (Fix g))
 ekey keys pos f e@(Fix x) | (NSet NonRecursive xs, ann) <- fromNExpr x =

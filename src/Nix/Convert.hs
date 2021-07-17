@@ -195,17 +195,16 @@ instance ( Convertible e t f m
     \case
       NVStr' ns -> pure $ pure ns
       NVPath' p ->
-        fmap
-          (pure . (\s -> makeNixStringWithSingletonContext s (StringContext s DirectPath)) . toText . unStorePath)
-          (addPath p)
-      NVSet' s _ ->
+        (\path -> pure $ makeNixStringWithSingletonContext path (StringContext path DirectPath)) . fromString . coerce <$>
+          addPath p
+      NVSet' _ s ->
         maybe
           stub
           fromValueMay
           (M.lookup "outPath" s)
       _ -> stub
 
-  fromValue = fromMayToValue $ TString NoContext
+  fromValue = fromMayToValue $ TString mempty
 
 instance Convertible e t f m
   => FromValue ByteString m (NValue' t f m (NValue t f m)) where
@@ -213,13 +212,12 @@ instance Convertible e t f m
   fromValueMay =
     pure .
       \case
-        NVStr' ns -> encodeUtf8 <$> getStringNoContext  ns
+        NVStr' ns -> encodeUtf8 <$> getStringNoContext ns
         _         -> mempty
 
-  fromValue = fromMayToValue $ TString NoContext
+  fromValue = fromMayToValue $ TString mempty
 
-
-newtype Path = Path { getPath :: FilePath }
+newtype Path = Path FilePath
     deriving Show
 
 instance ( Convertible e t f m
@@ -229,9 +227,9 @@ instance ( Convertible e t f m
 
   fromValueMay =
     \case
-      NVPath' p  -> pure $ pure $ Path p
-      NVStr'  ns -> pure $ Path . toString <$> getStringNoContext  ns
-      NVSet' s _ ->
+      NVPath' p  -> pure $ pure $ coerce p
+      NVStr'  ns -> pure $ coerce . toString <$> getStringNoContext  ns
+      NVSet' _ s ->
         maybe
           (pure Nothing)
           (fromValueMay @Path)
@@ -269,7 +267,7 @@ instance Convertible e t f m
   fromValueMay =
     pure .
       \case
-        NVSet' s _ -> pure s
+        NVSet' _ s -> pure s
         _          -> mempty
 
   fromValue = fromMayToValue TSet
@@ -281,19 +279,19 @@ instance ( Convertible e t f m
 
   fromValueMay =
     \case
-      Deeper (NVSet' s _) -> sequence <$> traverse fromValueMay s
+      Deeper (NVSet' _ s) -> sequence <$> traverse fromValueMay s
       _                   -> stub
 
   fromValue = fromMayToDeeperValue TSet
 
 instance Convertible e t f m
-  => FromValue (AttrSet (NValue t f m), AttrSet SourcePos) m
+  => FromValue (AttrSet (NValue t f m), PositionSet) m
               (NValue' t f m (NValue t f m)) where
 
   fromValueMay =
     pure .
       \case
-        NVSet' s p -> pure (s, p)
+        NVSet' p s -> pure (s, p)
         _          -> mempty
 
   fromValue = fromMayToValue TSet
@@ -301,12 +299,12 @@ instance Convertible e t f m
 instance ( Convertible e t f m
          , FromValue a m (NValue t f m)
          )
-  => FromValue (AttrSet a, AttrSet SourcePos) m
+  => FromValue (AttrSet a, PositionSet) m
               (Deeper (NValue' t f m (NValue t f m))) where
 
   fromValueMay =
     \case
-      Deeper (NVSet' s p) -> fmap (, p) . sequence <$> traverse fromValueMay s
+      Deeper (NVSet' p s) -> fmap (, p) . sequence <$> traverse fromValueMay s
       _                   -> stub
 
   fromValue = fromMayToDeeperValue TSet
@@ -365,11 +363,11 @@ instance Convertible e t f m
 
 instance Convertible e t f m
   => ToValue Path m (NValue' t f m (NValue t f m)) where
-  toValue = pure . nvPath' . getPath
+  toValue = pure . nvPath' . coerce
 
 instance Convertible e t f m
   => ToValue StorePath m (NValue' t f m (NValue t f m)) where
-  toValue = toValue . Path . unStorePath
+  toValue = toValue @Path . coerce
 
 instance ( Convertible e t f m
          )
@@ -378,7 +376,7 @@ instance ( Convertible e t f m
     f' <- toValue $ makeNixStringWithoutContext $ toText f
     l' <- toValue $ unPos l
     c' <- toValue $ unPos c
-    let pos = M.fromList [("file" :: Text, f'), ("line", l'), ("column", c')]
+    let pos = M.fromList [("file" :: VarName, f'), ("line", l'), ("column", c')]
     pure $ nvSet' mempty pos
 
 -- | With 'ToValue', we can always act recursively
@@ -402,12 +400,12 @@ instance (Convertible e t f m, ToValue a m (NValue t f m))
       stub
 
 instance Convertible e t f m
-  => ToValue (AttrSet (NValue t f m), AttrSet SourcePos) m
+  => ToValue (AttrSet (NValue t f m), PositionSet) m
             (NValue' t f m (NValue t f m)) where
   toValue (s, p) = pure $ nvSet' p s
 
 instance (Convertible e t f m, ToValue a m (NValue t f m))
-  => ToValue (AttrSet a, AttrSet SourcePos) m
+  => ToValue (AttrSet a, PositionSet) m
             (Deeper (NValue' t f m (NValue t f m))) where
   toValue (s, p) =
     liftA2 (\ v s -> Deeper $ nvSet' s v)

@@ -85,7 +85,7 @@ coerceToString call ctsm clevel = go
               (fmap storePathToNixString . addPath)
               (ctsm == CopyToStore)
               p
-          v@(NVSet s _) ->
+          v@(NVSet _ s) ->
             maybe
               (maybe
                 (err v)
@@ -116,5 +116,5 @@ coerceToString call ctsm clevel = go
       t
       (StringContext t DirectPath)
    where
-    t = toText $ unStorePath sp
+    t = fromString $ coerce sp
 

@@ -56,7 +56,6 @@ import qualified Nix.Eval                      as Eval
                                                 , evalWithAttrSet
                                                 )
 import           Nix.Expr.Types
-import           Nix.Expr.Types.Annotated
 import           Nix.Fresh
 import           Nix.String
 import           Nix.Scope
@@ -122,7 +121,7 @@ allSameType = allSame
 data TypeError
   = UnificationFail Type Type
   | InfiniteType TVar Type
-  | UnboundVariables [Text]
+  | UnboundVariables [VarName]
   | Ambigious [Constraint]
   | UnificationMismatch [Type] [Type]
   deriving (Eq, Show, Ord)
@@ -335,7 +334,7 @@ instance
 instance
   MonadInfer m
   => FromValue ( AttrSet (Judgment s)
-              , AttrSet SourcePos
+              , PositionSet
               ) (InferT s m) (Judgment s)
  where
   fromValueMay (Judgment _ _ (TSet _ xs)) =
@@ -350,7 +349,7 @@ instance
       <=< fromValueMay
 
 instance MonadInfer m
-  => ToValue (AttrSet (Judgment s), AttrSet SourcePos)
+  => ToValue (AttrSet (Judgment s), PositionSet)
             (InferT s m) (Judgment s) where
   toValue (xs, _) =
     liftA3
@@ -773,7 +772,7 @@ liftInfer = InferT . lift . lift . lift
 infer :: MonadInfer m => NExpr -> InferT s m (Judgment s)
 infer = foldFix Eval.eval
 
-inferTop :: Env -> [(Text, NExpr)] -> Either InferError Env
+inferTop :: Env -> [(VarName, NExpr)] -> Either InferError Env
 inferTop env []                = pure env
 inferTop env ((name, ex) : xs) =
   either

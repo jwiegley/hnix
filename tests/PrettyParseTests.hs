@@ -44,7 +44,7 @@ genSourcePos =
 
 genKeyName :: Gen (NKeyName NExpr)
 genKeyName =
-  Gen.choice [DynamicKey <$> genAntiquoted genString, StaticKey <$> asciiText]
+  Gen.choice [DynamicKey <$> genAntiquoted genString, StaticKey . coerce <$> asciiText]
 
 genAntiquoted :: Gen a -> Gen (Antiquoted a NExpr)
 genAntiquoted gen =
@@ -81,8 +81,8 @@ genAttrPath =
 
 genParams :: Gen (Params NExpr)
 genParams = Gen.choice
-  [ Param <$> asciiText
-  , liftA3 ParamSet
+  [ Param . coerce <$> asciiText
+  , liftA3 (\ a b c -> ParamSet (coerce a) b (coerce <$> c))
       (Gen.list (Range.linear 0 10) (liftA2 (,) asciiText $ Gen.maybe genExpr))
       Gen.bool
       (Gen.choice [stub, pure <$> asciiText])
@@ -124,7 +124,7 @@ genExpr =
  where
   genConstant    = NConstant                <$> genAtom
   genStr         = NStr                     <$> genString
-  genSym         = NSym                     <$> asciiText
+  genSym         = NSym . coerce            <$> asciiText
   genList        = NList                    <$> fairList genExpr
   genSet         = NSet NonRecursive        <$> fairList genBinding
   genRecSet      = NSet Recursive           <$> fairList genBinding
@@ -132,7 +132,7 @@ genExpr =
   genEnvPath     = NEnvPath                 <$> asciiString
   genUnary       = liftA2 NUnary   Gen.enumBounded       genExpr
   genBinary      = liftA3 NBinary  Gen.enumBounded       genExpr     genExpr
-  genSelect      = liftA3 NSelect  genExpr               genAttrPath (Gen.maybe genExpr)
+  genSelect      = liftA3 NSelect  (Gen.maybe genExpr)   genExpr     genAttrPath
   genHasAttr     = liftA2 NHasAttr genExpr               genAttrPath
   genAbs         = liftA2 NAbs     genParams             genExpr
   genLet         = liftA2 NLet     (fairList genBinding) genExpr
@@ -193,7 +193,7 @@ normalize = foldFix $ \case
   normAntiquotedText (Plain "''\n") = EscapedNewline
   normAntiquotedText r              = r
 
-  normParams (ParamSet binds var (Just "")) = ParamSet binds var mempty
+  normParams (ParamSet binds var (Just "")) = ParamSet binds var (coerce @Text <$> mempty)
   normParams r                              = r
 
 -- | Test that parse . pretty == id up to attribute position information.

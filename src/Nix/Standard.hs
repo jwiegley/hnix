@@ -271,8 +271,12 @@ instance
 --   withFrame Debug (ForcingThunk @t @f @m) . withFrame Debug frame
 
 newtype StandardTF r m a
-  = StandardTF (ReaderT (Context r (StdValue r))
-                        (StateT (HashMap FilePath NExprLoc, HashMap Text Text) m) a)
+  = StandardTF
+      (ReaderT
+        (Context r (StdValue r))
+        (StateT (HashMap FilePath NExprLoc, HashMap Text Text) m)
+        a
+      )
   deriving
     ( Functor
     , Applicative
@@ -316,9 +320,9 @@ instance MonadTrans (Fix1T StandardTF) where
   lift = Fix1T . lift
 
 instance MonadThunkId m
-  => MonadThunkId (Fix1T StandardTF m) where
+  => MonadThunkId (StandardT m) where
 
-  type ThunkId (Fix1T StandardTF m) = ThunkId m
+  type ThunkId (StandardT m) = ThunkId m
 
 mkStandardT
   :: ReaderT
@@ -326,7 +330,7 @@ mkStandardT
       (StateT (HashMap FilePath NExprLoc, HashMap Text Text) m)
       a
   -> StandardT m a
-mkStandardT = Fix1T . StandardTF
+mkStandardT = coerce
 
 runStandardT
   :: StandardT m a
@@ -334,7 +338,7 @@ runStandardT
       (Context (StandardT m) (StdValue (StandardT m)))
       (StateT (HashMap FilePath NExprLoc, HashMap Text Text) m)
       a
-runStandardT (Fix1T (StandardTF m)) = m
+runStandardT = coerce
 
 runWithBasicEffects
   :: (MonadIO m, MonadAtomicRef m)

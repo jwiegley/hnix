@@ -36,13 +36,12 @@ import           Text.Show                      ( showsPrec
                                                 , showString
                                                 , showParen
                                                 )
-import           Lens.Family2.Stock             ( _1 )
+import           Lens.Family2.Stock             ( _2 )
 import           Lens.Family2.TH                ( makeTraversals
                                                 , makeLenses
                                                 )
 import           Nix.Atoms
 import           Nix.Expr.Types
-import           Nix.Expr.Types.Annotated
 import           Nix.String
 import           Nix.Thunk
 
@@ -120,12 +119,11 @@ data NValueF p m r
     | NVStrF NixString
     | NVPathF FilePath
     | NVListF [r]
-    --  2021-05-22: NOTE: Please flip this and dependent functions.
-    -- Quite frequently actions/processing happens with values
-    -- (for example - forcing of values & recreation of the monad),
-    -- but SourcePos does not change then
-    -- That would be good to flip all 'AttrSet.* AttrSet SourcePos'
-    | NVSetF (AttrSet r) (AttrSet SourcePos)
+    | NVSetF PositionSet (AttrSet r)
+      -- ^
+      --   Quite frequently actions/processing happens with values
+      --   (for example - forcing of values & recreation of the monad),
+      --   but @SourcePos@ does not change then.
     | NVClosureF (Params ()) (p -> m r)
       -- ^ A function is a closed set of parameters representing the "call
       --   signature", used at application time to check the type of arguments
@@ -138,7 +136,7 @@ data NValueF p m r
       --   Note that 'm r' is being used here because effectively a function
       --   and its set of default arguments is "never fully evaluated". This
       --   enforces in the type that it must be re-evaluated for each call.
-    | NVBuiltinF Text (p -> m r)
+    | NVBuiltinF VarName (p -> m r)
       -- ^ A builtin function is itself already in normal form. Also, it may
       --   or may not choose to evaluate its argument in the production of a
       --   result.
@@ -151,8 +149,8 @@ instance Eq1 (NValueF p m) where
   liftEq _  (NVConstantF x) (NVConstantF y) = x == y
   liftEq _  (NVStrF      x) (NVStrF      y) = x == y
   liftEq eq (NVListF     x) (NVListF     y) = liftEq eq x y
-  liftEq eq (NVSetF x _   ) (NVSetF y _   ) = liftEq eq x y
-  liftEq _  (NVPathF x    ) (NVPathF y    ) = x == y
+  liftEq eq (NVSetF  _   x) (NVSetF _    y) = liftEq eq x y
+  liftEq _  (NVPathF     x) (NVPathF     y) = x == y
   liftEq _  _               _               = False
 
 
@@ -166,7 +164,7 @@ instance Show r => Show (NValueF p m r) where
       (NVConstantF atom     ) -> showsCon1 "NVConstant" atom
       (NVStrF      ns       ) -> showsCon1 "NVStr"      (stringIgnoreContext ns)
       (NVListF     lst      ) -> showsCon1 "NVList"     lst
-      (NVSetF      attrs  _ ) -> showsCon1 "NVSet"      attrs
+      (NVSetF      _   attrs) -> showsCon1 "NVSet"      attrs
       (NVClosureF  params _ ) -> showsCon1 "NVClosure"  params
       (NVPathF     path     ) -> showsCon1 "NVPath"     path
       (NVBuiltinF  name   _ ) -> showsCon1 "NVBuiltin"  name
@@ -185,7 +183,7 @@ instance Foldable (NValueF p m) where
     NVStrF      _  -> mempty
     NVPathF     _  -> mempty
     NVListF     l  -> foldMap f l
-    NVSetF     s _ -> foldMap f s
+    NVSetF     _ s -> foldMap f s
     NVClosureF _ _ -> mempty
     NVBuiltinF _ _ -> mempty
 
@@ -203,11 +201,7 @@ sequenceNValueF transform = \case
   NVStrF      s  -> pure $ NVStrF s
   NVPathF     p  -> pure $ NVPathF p
   NVListF     l  -> NVListF <$> sequenceA l
-  NVSetF     s p ->
-    liftA2
-      NVSetF
-      (sequenceA s)
-      (pure p)
+  NVSetF     p s -> NVSetF p <$> sequenceA s
   NVClosureF p g -> pure $ NVClosureF p (transform <=< g)
   NVBuiltinF s g -> pure $ NVBuiltinF s (transform <=< g)
 
@@ -226,11 +220,7 @@ bindNValueF transform f = \case
   NVStrF      s  -> pure $ NVStrF s
   NVPathF     p  -> pure $ NVPathF p
   NVListF     l  -> NVListF <$> traverse f l
-  NVSetF     s p ->
-    liftA2
-      NVSetF
-      (traverse f s)
-      (pure p)
+  NVSetF     p s -> NVSetF p <$> traverse f s
   NVClosureF p g -> pure $ NVClosureF p (transform . f <=< g)
   NVBuiltinF s g -> pure $ NVBuiltinF s (transform . f <=< g)
 
@@ -268,13 +258,13 @@ hoistNValueF lft =
     --   , NVStrF s
     --   , NVPathF p
     --   , NVListF l
-    --   , NVSetF s p
+    --   , NVSetF p s
     --   ]
     NVConstantF a  -> NVConstantF a
     NVStrF      s  -> NVStrF s
     NVPathF     p  -> NVPathF p
     NVListF     l  -> NVListF l
-    NVSetF     s p -> NVSetF s p
+    NVSetF     p s -> NVSetF p s
     NVBuiltinF s g -> NVBuiltinF s (lft . g)
     NVClosureF p g -> NVClosureF p (lft . g)
 {-# inline hoistNValueF #-}
@@ -303,7 +293,7 @@ instance Comonad f => Show1 (NValue' t f m) where
     NVStr' ns ->
       showsUnaryWith showsPrec "NVStrF" p (stringIgnoreContext ns)
     NVList' lst       -> showsUnaryWith (liftShowsPrec sp sl) "NVListF" p lst
-    NVSet' attrs _    -> showsUnaryWith (liftShowsPrec sp sl) "NVSetF" p attrs
+    NVSet'  _   attrs -> showsUnaryWith (liftShowsPrec sp sl) "NVSetF" p attrs
     NVPath' path      -> showsUnaryWith showsPrec "NVPathF" p path
     NVClosure' c    _ -> showsUnaryWith showsPrec "NVClosureF" p c
     NVBuiltin' name _ -> showsUnaryWith showsPrec "NVBuiltinF" p name
@@ -330,7 +320,7 @@ lmapNValueF f = \case
   NVStrF      s  -> NVStrF s
   NVPathF     p  -> NVPathF p
   NVListF     l  -> NVListF l
-  NVSetF     s p -> NVSetF s p
+  NVSetF     p s -> NVSetF p s
   NVClosureF p g -> NVClosureF p (g . f)
   NVBuiltinF s g -> NVBuiltinF s (g . f)
 
@@ -445,10 +435,11 @@ nvList' = NValue' . pure . NVListF
 
 -- | Haskell key-value to the Nix key-value,
 nvSet' :: Applicative f
-  => AttrSet SourcePos
+  => PositionSet
   -> AttrSet r
   -> NValue' t f m r
-nvSet' x s = NValue' $ pure $ NVSetF s x
+--  2021-07-16: NOTE: that the arguments are flipped.
+nvSet' p s = NValue' $ pure $ NVSetF p s
 
 
 -- | Haskell closure to the Nix closure,
@@ -463,7 +454,7 @@ nvClosure' x f = NValue' $ pure $ NVClosureF x f
 
 -- | Haskell functions to the Nix functions!
 nvBuiltin' :: (Applicative f, Functor m)
-  => Text
+  => VarName
   -> (NValue t f m -> m r)
   -> NValue' t f m r
 nvBuiltin' name f = NValue' $ pure $ NVBuiltinF name f
@@ -485,7 +476,7 @@ pattern NVConstant' x <- NValue' (extract -> NVConstantF x)
 pattern NVStr' ns <- NValue' (extract -> NVStrF ns)
 pattern NVPath' x <- NValue' (extract -> NVPathF x)
 pattern NVList' l <- NValue' (extract -> NVListF l)
-pattern NVSet' s x <- NValue' (extract -> NVSetF s x)
+pattern NVSet' p s <- NValue' (extract -> NVSetF p s)
 pattern NVClosure' x f <- NValue' (extract -> NVClosureF x f)
 pattern NVBuiltin' name f <- NValue' (extract -> NVBuiltinF name f)
 {-# COMPLETE NVConstant', NVStr', NVPath', NVList', NVSet', NVClosure', NVBuiltin' #-}
@@ -627,11 +618,10 @@ nvList = Free . nvList'
 
 
 nvSet :: Applicative f
-  => AttrSet SourcePos
+  => PositionSet
   -> AttrSet (NValue t f m)
   -> NValue t f m
-nvSet x s = Free $ nvSet' x s
-
+nvSet p s = Free $ nvSet' p s
 
 nvClosure :: (Applicative f, Functor m)
   => Params ()
@@ -643,7 +633,7 @@ nvClosure x f = Free $ nvClosure' x f
 
 
 nvBuiltin :: (Applicative f, Functor m)
-  => Text
+  => VarName
   -> (NValue t f m
     -> m (NValue t f m)
     )
@@ -654,7 +644,7 @@ nvBuiltin name f = Free $ nvBuiltin' name f
 builtin
   :: forall m f t
    . (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => Text
+  => VarName
   -> ( NValue t f m
     -> m (NValue t f m)
     )
@@ -664,7 +654,7 @@ builtin name f = pure $ nvBuiltin name $ \a -> f a
 
 builtin2
   :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => Text
+  => VarName
   -> ( NValue t f m
     -> NValue t f m
     -> m (NValue t f m)
@@ -675,7 +665,7 @@ builtin2 name f = builtin name $ \a -> builtin name $ \b -> f a b
 
 builtin3
   :: (MonadThunk t m (NValue t f m), MonadDataContext f m)
-  => Text
+  => VarName
   -> ( NValue t f m
     -> NValue t f m
     -> NValue t f m
@@ -706,6 +696,15 @@ pattern NVBuiltin name f <- Free (NVBuiltin' name f)
 data TStringContext = NoContext | HasContext
   deriving Show
 
+instance Semigroup TStringContext where
+  (<>) HasContext _ = HasContext
+  (<>) _ HasContext = HasContext
+  (<>) _          _ = NoContext
+
+
+instance Monoid TStringContext where
+  mempty = NoContext
+
 -- * @ValueType@
 
 data ValueType
@@ -728,7 +727,7 @@ valueType =
   \case
     NVConstantF a ->
       case a of
-        NURI   _ -> TString NoContext
+        NURI   _ -> TString mempty
         NInt   _ -> TInt
         NFloat _ -> TFloat
         NBool  _ -> TBool
@@ -736,7 +735,7 @@ valueType =
     NVStrF ns  ->
       TString $
         bool
-          NoContext
+          mempty
           HasContext
           (stringHasContext ns)
     NVListF{}    -> TList
@@ -822,4 +821,4 @@ key
   :: (Traversable f, Applicative g)
   => VarName
   -> LensLike' g (NValue' t f m a) (Maybe a)
-key k = nValue . traverse . _NVSetF . _1 . hashAt k
+key k = nValue . traverse . _NVSetF . _2 . hashAt k

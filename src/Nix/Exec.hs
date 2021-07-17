@@ -86,7 +86,7 @@ nvListP p l = addProvenance p $ nvList l
 nvSetP
   :: MonadCited t f m
   => Provenance m (NValue t f m)
-  -> AttrSet SourcePos
+  -> PositionSet
   -> AttrSet (NValue t f m)
   -> NValue t f m
 nvSetP p x s = addProvenance p $ nvSet x s
@@ -102,7 +102,7 @@ nvClosureP p x f = addProvenance p $ nvClosure x f
 nvBuiltinP
   :: MonadCited t f m
   => Provenance m (NValue t f m)
-  -> Text
+  -> VarName
   -> (NValue t f m -> m (NValue t f m))
   -> NValue t f m
 nvBuiltinP p name f = addProvenance p $ nvBuiltin name f
@@ -168,13 +168,13 @@ instance MonadNix e t f m => MonadEval (NValue t f m) m where
         )
         ms
        where
-        attr = Text.intercalate "." $ NE.toList ks
+        attr = Text.intercalate "." $ NE.toList $ coerce <$> ks
 
   evalCurPos = do
     scope                  <- currentScopes
     span@(SrcSpan delta _) <- currentPos
     addProvenance @_ @_ @(NValue t f m)
-      (Provenance scope $ NSym_ span "__curPos") <$>
+      (Provenance scope $ NSym_ span (coerce @Text "__curPos")) <$>
         toValue delta
 
   evaledSym name val = do
@@ -299,8 +299,8 @@ callFunc fun arg =
       NVBuiltin name f    ->
         do
           span <- currentPos
-          withFrame Info ((Calling @m @(NValue t f m)) name span) $ f arg -- Is this cool?
-      (NVSet m _) | Just f <- M.lookup "__functor" m ->
+          withFrame Info ((Calling @m @(NValue t f m)) (coerce name) span) $ f arg -- Is this cool?
+      (NVSet _ m) | Just f <- M.lookup "__functor" m ->
         (`callFunc` arg) =<< (`callFunc` fun') =<< demand f
       _x -> throwError $ ErrorCall $ "Attempt to call non-function: " <> show _x
 
@@ -403,9 +403,9 @@ execBinaryOpForced scope span op lval rval = case op of
 
   NUpdate ->
     case (lval, rval) of
-      (NVSet ls lp, NVSet rs rp) -> pure $ nvSetP prov (rp <> lp) (rs <> ls)
-      (NVSet ls lp, NVConstant NNull) -> pure $ nvSetP prov lp ls
-      (NVConstant NNull, NVSet rs rp) -> pure $ nvSetP prov rp rs
+      (NVSet lp ls, NVSet rp rs) -> pure $ nvSetP prov (rp <> lp) (rs <> ls)
+      (NVSet lp ls, NVConstant NNull) -> pure $ nvSetP prov lp ls
+      (NVConstant NNull, NVSet rp rs) -> pure $ nvSetP prov rp rs
       _ -> unsupportedTypes
 
   NPlus ->

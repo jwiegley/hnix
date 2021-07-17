@@ -5,6 +5,8 @@ module Nix.Options where
 
 import           Data.Time
 
+--  2021-07-15: NOTE: What these are? They need to be documented.
+-- Also need better names. Foe example, Maybes & lists names need to show their type in the name.
 data Options = Options
     { verbose      :: Verbosity
     , tracing      :: Bool

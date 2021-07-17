@@ -67,7 +67,7 @@ mkSynHole :: Text -> NExpr
 mkSynHole = Fix . mkSynHoleF
 
 mkSelector :: Text -> NAttrPath NExpr
-mkSelector = (:| mempty) . StaticKey
+mkSelector = (:| mempty) . StaticKey . coerce
 
 -- | Put an unary operator.
 mkOp :: NUnaryOp -> NExpr -> NExpr
@@ -88,7 +88,7 @@ mkOp2 :: NBinaryOp -> NExpr -> NExpr -> NExpr
 mkOp2 op a = Fix . NBinary op a
 
 mkParamset :: [(Text, Maybe NExpr)] -> Bool -> Params NExpr
-mkParamset params variadic = ParamSet params variadic mempty
+mkParamset params variadic = ParamSet (coerce params) variadic Nothing
 
 -- | Put a recursive set.
 --
@@ -175,8 +175,8 @@ mkFunction :: Params NExpr -> NExpr -> NExpr
 mkFunction params = Fix . NAbs params
 
 -- | General dot-reference with optional alternative if the jey does not exist.
-getRefOrDefault :: NExpr -> VarName -> Maybe NExpr -> NExpr
-getRefOrDefault obj name alt = Fix $ NSelect obj (mkSelector name) alt
+getRefOrDefault :: Maybe NExpr -> NExpr -> Text -> NExpr
+getRefOrDefault alt obj name = Fix $ NSelect alt obj (mkSelector name)
 
 -- ** Base functor builders for basic expressions builders *sic
 
@@ -211,11 +211,11 @@ mkRelPathF = mkPathF False
 
 -- | Unfixed @mkSym@.
 mkSymF :: Text -> NExprF a
-mkSymF = NSym
+mkSymF = NSym . coerce
 
 -- | Unfixed @mkSynHole@.
 mkSynHoleF :: Text -> NExprF a
-mkSynHoleF = NSynHole
+mkSynHoleF = NSynHole . coerce
 
 
 -- * Other
@@ -294,14 +294,14 @@ recAttrsE pairs = mkRecSet $ uncurry ($=) <$> pairs
 
 -- | Dot-reference into an attribute set: @attrSet.k@
 (@.) :: NExpr -> Text -> NExpr
-(@.) obj name = getRefOrDefault obj name Nothing
+(@.) = getRefOrDefault Nothing
 infix 9 @.
 
 -- | Dot-reference into an attribute set with alternative if the key does not exist.
 --
 -- > s.x or y
-(@.<|>) :: NExpr -> VarName -> NExpr -> NExpr
-(@.<|>) obj name alt = getRefOrDefault obj name $ pure alt
+(@.<|>) :: NExpr -> Text -> NExpr -> NExpr
+(@.<|>) obj name alt = getRefOrDefault (pure alt ) obj name
 infix 9 @.<|>
 
 -- | Function application (@' '@ in @f x@)

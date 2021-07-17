@@ -104,7 +104,7 @@ evaluateExpression
 evaluateExpression mpath evaluator handler expr =
   do
     opts :: Options <- asks $ view hasLens
-    args <-
+    (coerce -> args) <-
       (traverse . traverse)
         eval'
         $  (second parseArg <$> arg    opts)
@@ -137,23 +137,23 @@ processResult h val = do
   opts :: Options <- asks $ view hasLens
   maybe
     (h val)
-    (\ (Text.splitOn "." -> keys) -> processKeys keys val)
+    (\ (coerce . Text.splitOn "." -> keys) -> processKeys keys val)
     (attr opts)
  where
-  processKeys :: [Text] -> NValue t f m -> m a
+  processKeys :: [VarName] -> NValue t f m -> m a
   processKeys kys v =
     list
       (h v)
-      (\ (k : ks) ->
+      (\ ((k : ks) :: [VarName]) ->
         do
           v' <- demand v
           case (k, v') of
-            (Text.decimal -> Right (n,""), NVList xs) -> processKeys ks $ xs !! n
-            (_,         NVSet xs _) ->
+            (Text.decimal . coerce -> Right (n,""), NVList xs) -> processKeys ks $ xs !! n
+            (_,         NVSet _ xs) ->
               maybe
-                (errorWithoutStackTrace $ toString $ "Set does not contain key '" <> k <> "'")
+                (errorWithoutStackTrace $ "Set does not contain key ''" <> show k <> "''.")
                 (processKeys ks)
                 (M.lookup k xs)
-            (_, _) -> errorWithoutStackTrace $ toString $ "Expected a set or list for selector '" <> k <> "', but got: " <> show v
+            (_, _) -> errorWithoutStackTrace $ "Expected a set or list for selector '" <> show k <> "', but got: " <> show v
       )
       kys

@@ -23,6 +23,7 @@ import qualified System.Directory              as S
 import qualified System.Posix.Files            as S
 import           Text.Megaparsec.Error
 import           Text.Megaparsec.Pos
+import qualified Data.Text                     as Text
 
 class MonadFail m => MonadFile m where
     readFile :: FilePath -> m ByteString
@@ -110,11 +111,13 @@ sourceContext path (unPos -> begLine) (unPos -> _begCol) (unPos -> endLine) (unP
       .   decodeUtf8
       <$> readFile path
     let
-      longest = length $ show @String (beg' + (length ls) - 1)
+      longest = Text.length $ show $ beg' + length ls - 1
+      pad :: Int -> Text
       pad n =
         let
+          ns :: Text
           ns = show n
-          nsp = replicate (longest - length ns) ' ' <> ns
+          nsp = Text.replicate (longest - Text.length ns) " " <> ns
         in
           if
           | n == begLine && n == endLine -> "==> " <> nsp <> " |  "
@@ -122,16 +125,18 @@ sourceContext path (unPos -> begLine) (unPos -> _begCol) (unPos -> endLine) (unP
           | otherwise                    -> "    " <> nsp <> " |  "
       composeLine n l =
         [pretty (pad n) <> l]
-        ++ [ pretty
-               $  replicate (length (pad n) - 3) ' '
-               <> "|  "
-               <> replicate (_begCol - 1) ' '
-               <> replicate (_endCol - _begCol) '^'
-           | begLine == endLine && n == endLine ]
+        <> bool mempty
+          [ pretty $
+              Text.replicate (Text.length (pad n) - 3) " "
+              <> "|"
+              <> Text.replicate (_begCol + 1) " "
+              <> Text.replicate (_endCol - _begCol) "^"
+          ]
+          (begLine == endLine && n == endLine)
         -- XXX: Consider inserting the message here when it is small enough.
         -- ATM some messages are so huge that they take prevalence over the source listing.
         -- ++ [ indent (length $ pad n) msg | n == endLine ]
 
       ls' = concat $ zipWith composeLine [beg' ..] ls
 
-    pure $ vsep $ ls' ++ [ indent (length $ pad begLine) msg ]
+    pure $ vsep $ ls' <> [ indent (Text.length $ pad begLine) msg ]

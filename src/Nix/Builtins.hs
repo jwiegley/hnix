@@ -5,7 +5,6 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE MultiWayIf #-}
-{-# LANGUAGE PackageImports #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -49,7 +48,6 @@ import qualified Data.HashMap.Lazy             as M
 import           Data.Scientific
 import qualified Data.Set                      as S
 import qualified Data.Text                     as Text
-import qualified Data.Text.Lazy                as LazyText
 import qualified Data.Text.Lazy.Builder        as Builder
 import           Data.These                     ( fromThese )
 import qualified Data.Time.Clock.POSIX         as Time
@@ -61,7 +59,6 @@ import           Nix.Effects
 import           Nix.Effects.Basic              ( fetchTarball )
 import           Nix.Exec
 import           Nix.Expr.Types
-import           Nix.Expr.Types.Annotated
 import qualified Nix.Eval                      as Eval
 import           Nix.Frames
 import           Nix.Json
@@ -103,7 +100,7 @@ data BuiltinType = Normal | TopLevel
 data Builtin v =
   Builtin
     { _kind   :: BuiltinType
-    , mapping :: (Text, v)
+    , mapping :: (VarName, v)
     }
 
 -- *** @class ToBuiltin@ and its instances
@@ -126,7 +123,7 @@ instance
   )
   => ToBuiltin t f m (a -> b) where
   toBuiltin name f =
-    pure $ nvBuiltin name $ toBuiltin name . f <=< fromValue . Deeper
+    pure $ nvBuiltin (coerce name) $ toBuiltin name . f <=< fromValue . Deeper
 
 -- *** @WValue@ closure wrapper to have @Ord@
 
@@ -215,10 +212,10 @@ foldNixPath z f =
       [n, p] -> f (toString p) (pure n) ty rest
       _ -> throwError $ ErrorCall $ "Unexpected entry in NIX_PATH: " <> show x
 
-attrsetGet :: MonadNix e t f m => Text -> AttrSet (NValue t f m) -> m (NValue t f m)
+attrsetGet :: MonadNix e t f m => VarName -> AttrSet (NValue t f m) -> m (NValue t f m)
 attrsetGet k s =
   maybe
-    (throwError $ ErrorCall $ "Attribute '" <> toString k <> "' required")
+    (throwError $ ErrorCall $ toString @Text $ "Attribute '" <> coerce k <> "' required")
     pure
     (M.lookup k s)
 
@@ -442,8 +439,8 @@ hasAttrNix
   -> m (NValue t f m)
 hasAttrNix x y =
   do
-    key <- fromStringNoContext =<< fromValue x
-    (aset, _) <- fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) y
+    (coerce -> key) <- fromStringNoContext =<< fromValue x
+    (aset, _) <- fromValue @(AttrSet (NValue t f m), PositionSet) y
 
     toValue $ M.member key aset
 
@@ -458,8 +455,8 @@ getAttrNix
   -> m (NValue t f m)
 getAttrNix x y =
   do
-    key <- fromStringNoContext =<< fromValue x
-    (aset, _) <- fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) y
+    (coerce -> key) <- fromStringNoContext =<< fromValue x
+    (aset, _) <- fromValue @(AttrSet (NValue t f m), PositionSet) y
 
     attrsetGet key aset
 
@@ -475,11 +472,11 @@ unsafeGetAttrPosNix nvX nvY =
     y <- demand nvY
 
     case (x, y) of
-      (NVStr ns, NVSet _ apos) ->
+      (NVStr ns, NVSet apos _) ->
         maybe
           (pure nvNull)
           toValue
-          (M.lookup (stringIgnoreContext ns) apos)
+          (M.lookup @VarName (coerce $ stringIgnoreContext ns) apos)
       _xy -> throwError $ ErrorCall $ "Invalid types for builtins.unsafeGetAttrPosNix: " <> show _xy
 
 -- This function is a bit special in that it doesn't care about the contents
@@ -635,7 +632,7 @@ parseDrvNameNix drvname =
 
     toValue @(AttrSet (NValue t f m)) $
       M.fromList
-        [ ( "name" :: Text
+        [ ( "name" :: VarName
           , mkNVStr name
           )
         , ( "version"
@@ -722,7 +719,7 @@ substringNix start len str =
 attrNamesNix
   :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
 attrNamesNix =
-  (fmap (coerce :: CoerceDeeperToNValue t f m) . toValue . fmap makeNixStringWithoutContext . sort . M.keys)
+  (fmap (coerce :: CoerceDeeperToNValue t f m) . toValue . fmap (makeNixStringWithoutContext . coerce @VarName @Text) . sort . M.keys)
   <=< fromValue @(AttrSet (NValue t f m))
 
 attrValuesNix
@@ -733,7 +730,7 @@ attrValuesNix nvattrs =
     toValue $
       snd <$>
         sortOn
-          (fst @Text @(NValue t f m))
+          (fst @VarName @(NValue t f m))
           (M.toList attrs)
 
 mapNix
@@ -766,7 +763,7 @@ mapAttrsNix f xs =
 
       applyFunToKeyVal (key, val) =
         do
-          runFunForKey <- callFunc f $ nvStrWithoutContext key
+          runFunForKey <- callFunc f $ nvStrWithoutContext (coerce key)
           callFunc runFunForKey val
 
     newVals <-
@@ -801,7 +798,7 @@ catAttrsNix attrName xs =
 
     nvList . catMaybes <$>
       traverse
-        (fmap (M.lookup n) . fromValue <=< demand)
+        (fmap (M.lookup (coerce @Text @VarName n)) . fromValue <=< demand)
         l
 
 baseNameOfNix :: MonadNix e t f m => NValue t f m -> m (NValue t f m)
@@ -1030,7 +1027,7 @@ replaceStringsNix tfrom tto ts =
 
         --  2021-02-18: NOTE: rly?: toStrict . toLazyText
         --  Maybe `text-builder`, `text-show`?
-        finish ctx output = makeNixString (LazyText.toStrict $ Builder.toLazyText output) ctx
+        finish ctx output = makeNixString (toStrict $ Builder.toLazyText output) ctx
 
         replace (key, replacementNS, unprocessedInput) = replaceWithNixBug unprocessedInput updatedOutput
 
@@ -1076,11 +1073,12 @@ removeAttrsNix
   -> m (NValue t f m)
 removeAttrsNix set v =
   do
-    (m, p) <- fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set
+    (m, p) <- fromValue @(AttrSet (NValue t f m), PositionSet) set
     (nsToRemove :: [NixString]) <- fromValue $ Deeper v
-    toRemove <- traverse fromStringNoContext nsToRemove
+    (coerce -> toRemove) <- traverse fromStringNoContext nsToRemove
     toValue (go m toRemove, go p toRemove)
  where
+  go :: forall k v . (Eq k, Hashable k) => HashMap k v -> [k] -> HashMap k v
   go = foldl' (flip M.delete)
 
 intersectAttrsNix
@@ -1091,8 +1089,8 @@ intersectAttrsNix
   -> m (NValue t f m)
 intersectAttrsNix set1 set2 =
   do
-    (s1, p1) <- fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set1
-    (s2, p2) <- fromValue @(AttrSet (NValue t f m), AttrSet SourcePos) set2
+    (s1, p1) <- fromValue @(AttrSet (NValue t f m), PositionSet) set1
+    (s2, p2) <- fromValue @(AttrSet (NValue t f m), PositionSet) set2
 
     pure $ nvSet (p2 `M.intersection` p1) (s2 `M.intersection` s1)
 
@@ -1124,7 +1122,7 @@ toFileNix name s =
         (stringIgnoreContext s')
 
     let
-      t  = toText $ unStorePath mres
+      t  = coerce $ toText @FilePath $ coerce mres
       sc = StringContext t DirectPath
 
     toValue $ makeNixStringWithSingletonContext t sc
@@ -1373,7 +1371,7 @@ listToAttrsNix lst =
         (\ nvattrset ->
           do
             a <- fromValue @(AttrSet (NValue t f m)) =<< demand nvattrset
-            name <- fromStringNoContext =<< fromValue =<< demand =<< attrsetGet "name" a
+            (coerce -> name) <- fromStringNoContext =<< fromValue =<< demand =<< attrsetGet "name" a
             val  <- attrsetGet "value" a
 
             pure (name, val)
@@ -1482,7 +1480,7 @@ readDirNix nvpath =
                 | isSymbolicLink s -> FileTypeSymlink
                 | otherwise        -> FileTypeUnknown
 
-          pure (toText item, t)
+          pure (coerce @Text @VarName $ toText item, t) -- function indeed binds filepaths as keys (VarNames) in Nix attrset.
 
     itemsWithTypes <-
       traverse
@@ -1505,8 +1503,10 @@ fromJSONNix nvjson =
       (A.eitherDecodeStrict' @A.Value $ encodeUtf8 jText)
 
  where
+  -- jsonToNValue :: MonadNix e t f m => A.Value -> f (NValue t f m)
+  jsonToNValue :: (A.Value -> m (NValue t f m))
   jsonToNValue = \case
-    A.Object m -> nvSet mempty <$> traverse jsonToNValue m
+    A.Object m -> nvSet mempty <$> traverse jsonToNValue (M.mapKeys coerce m)
     A.Array  l -> nvList <$> traverse jsonToNValue (V.toList l)
     A.String s -> pure $ nvStrWithoutContext s
     A.Number n ->
@@ -1607,7 +1607,7 @@ fetchurlNix
   :: forall e t f m . MonadNix e t f m => NValue t f m -> m (NValue t f m)
 fetchurlNix =
   (\case
-    NVSet s _ -> go (M.lookup "sha256" s) =<< demand =<< attrsetGet "url" s
+    NVSet _ s -> go (M.lookup "sha256" s) =<< demand =<< attrsetGet "url" s
     v@NVStr{} -> go Nothing v
     v -> throwError $ ErrorCall $ "builtins.fetchurl: Expected URI or set, got " <> show v
   ) <=< demand
@@ -1697,7 +1697,7 @@ appendContextNix tx ty =
     y <- demand ty
 
     case (x, y) of
-      (NVStr ns, NVSet attrs _) ->
+      (NVStr ns, NVSet _ attrs) ->
         do
           newContextValues <- traverse getPathNOuts attrs
 
@@ -1711,7 +1711,7 @@ appendContextNix tx ty =
       x <- demand tx
 
       case x of
-        NVSet attrs _ ->
+        NVSet _ attrs->
           do
             -- TODO: Fail for unexpected keys.
 
@@ -1878,36 +1878,36 @@ builtinsList = sequence
   arity2 :: (a -> b -> c) -> (a -> b -> Prim m c)
   arity2 f = ((Prim . pure) .) . f
 
-  mkBuiltin :: BuiltinType -> Text -> m (NValue t f m) -> m (Builtin (NValue t f m))
+  mkBuiltin :: BuiltinType -> VarName -> m (NValue t f m) -> m (Builtin (NValue t f m))
   mkBuiltin t n v = wrap t n <$> mkThunk n v
    where
-    wrap :: BuiltinType -> Text -> v -> Builtin v
+    wrap :: BuiltinType -> VarName -> v -> Builtin v
     wrap t n f = Builtin t (n, f)
 
-    mkThunk :: Text -> m (NValue t f m) -> m (NValue t f m)
+    mkThunk :: VarName -> m (NValue t f m) -> m (NValue t f m)
     mkThunk n = defer . withFrame Info (ErrorCall $ "While calling builtin " <> toString n <> "\n")
 
   hAdd
-    :: ( Text
+    :: ( VarName
       -> fun
       -> m (NValue t f m)
       )
     -> BuiltinType
-    -> Text
+    -> VarName
     -> fun
     -> m (Builtin (NValue t f m))
   hAdd f t n v = mkBuiltin t n $ f n v
 
   add0
     :: BuiltinType
-    -> Text
+    -> VarName
     -> m (NValue t f m)
     -> m (Builtin (NValue t f m))
   add0 = hAdd (\ _ x -> x)
 
   add
     :: BuiltinType
-    -> Text
+    -> VarName
     -> ( NValue t f m
       -> m (NValue t f m)
       )
@@ -1916,7 +1916,7 @@ builtinsList = sequence
 
   add2
     :: BuiltinType
-    -> Text
+    -> VarName
     -> ( NValue t f m
       -> NValue t f m
       -> m (NValue t f m)
@@ -1926,7 +1926,7 @@ builtinsList = sequence
 
   add3
     :: BuiltinType
-    -> Text
+    -> VarName
     -> ( NValue t f m
       -> NValue t f m
       -> NValue t f m
@@ -1938,10 +1938,10 @@ builtinsList = sequence
   add'
     :: ToBuiltin t f m a
     => BuiltinType
-    -> Text
+    -> VarName
     -> a
     -> m (Builtin (NValue t f m))
-  add' = hAdd toBuiltin
+  add' = hAdd (toBuiltin . coerce)
 
 
 -- * Exported
@@ -1987,6 +1987,11 @@ builtins =
     lst <- ([("builtins", ref)] <>) <$> topLevelBuiltins
     pushScope (M.fromList lst) currentScopes
  where
+  buildMap
+    :: ( MonadNix e t f m
+      , Scoped (NValue t f m) m
+      )
+    => m (HashMap VarName (NValue t f m))
   buildMap         =  fmap (M.fromList . fmap mapping) builtinsList
   topLevelBuiltins = mapping <<$>> fullBuiltinsList
 
@@ -1994,5 +1999,5 @@ builtins =
    where
     nameBuiltins b@(Builtin TopLevel _) = b
     nameBuiltins (Builtin Normal nB) =
-      Builtin TopLevel $ first ("__" <>) nB
+      Builtin TopLevel $ first (coerce @Text . ("__" <>) . coerce @VarName) nB
 

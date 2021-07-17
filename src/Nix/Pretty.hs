@@ -127,12 +127,15 @@ prettyString (Indented _ parts) = group $ nest 2 $ vcat
   prettyPart EscapedNewline = "\\n"
   prettyPart (Antiquoted r) = "${" <> withoutParens r <> "}"
 
+prettyVarName :: VarName -> Doc ann
+prettyVarName = pretty @Text . coerce
+
 prettyParams :: Params (NixDoc ann) -> Doc ann
-prettyParams (Param n           ) = pretty n
+prettyParams (Param n           ) = prettyVarName n
 prettyParams (ParamSet s v mname) = prettyParamSet s v <>
   maybe
     mempty
-    (\ name ->
+    (\ (coerce -> name) ->
        bool
          mempty
          ("@" <> pretty name)
@@ -150,8 +153,8 @@ prettyParamSet args var =
  where
   prettySetArg (n, maybeDef) =
     maybe
-      (pretty n)
-      (\x -> pretty n <> " ? " <> withoutParens x)
+      (prettyVarName n)
+      (\x -> prettyVarName n <> " ? " <> withoutParens x)
       maybeDef
   prettyVariadic = [ "..." | var ]
   sep            = align ", "
@@ -170,8 +173,8 @@ prettyBind (Inherit s ns _p) =
 
 prettyKeyName :: NKeyName (NixDoc ann) -> Doc ann
 prettyKeyName (StaticKey "") = "\"\""
-prettyKeyName (StaticKey key) | HashSet.member key reservedNames = "\"" <> pretty key <> "\""
-prettyKeyName (StaticKey  key) = pretty key
+prettyKeyName (StaticKey key) | HashSet.member key reservedNames = "\"" <> prettyVarName key <> "\""
+prettyKeyName (StaticKey  key) = prettyVarName key
 prettyKeyName (DynamicKey key) =
   runAntiquoted
     (DoubleQuoted [Plain "\n"])
@@ -245,7 +248,7 @@ exprFNixDoc = \case
       opInfo
       (pretty (operatorName opInfo) <> wrapParens opInfo r1)
     where opInfo = getUnaryOperator op
-  NSelect r' attr o ->
+  NSelect o r' attr ->
     maybe
       (mkNixDoc selectOp)
       (const leastPrecedence)
@@ -273,7 +276,7 @@ exprFNixDoc = \case
               ("./" <> _txt)
               _txt
               (any (`isPrefixOf` _txt) ["/", "~/", "./", "../"])
-  NSym name -> simpleExpr $ pretty name
+  NSym name -> simpleExpr $ prettyVarName name
   NLet binds body ->
     leastPrecedence $
       group $
@@ -295,7 +298,7 @@ exprFNixDoc = \case
     prettyAddScope "with " scope body
   NAssert cond body ->
     prettyAddScope "assert " cond body
-  NSynHole name -> simpleExpr $ pretty ("^" <> name)
+  NSynHole name -> simpleExpr $ pretty @Text ("^" <> coerce name)
  where
   prettyContainer h f t c =
     list
@@ -318,13 +321,13 @@ valueToExpr = iterNValueByDiscardWith thk (Fix . phi)
   phi (NVConstant' a     ) = NConstant a
   phi (NVStr'      ns    ) = NStr $ DoubleQuoted [Plain (stringIgnoreContext ns)]
   phi (NVList'     l     ) = NList l
-  phi (NVSet'      s    p) = NSet NonRecursive
-    [ NamedVar (StaticKey k :| mempty) v (fromMaybe nullPos (M.lookup k p))
+  phi (NVSet'      p    s) = NSet NonRecursive
+    [ NamedVar (StaticKey k :| mempty) v (fromMaybe nullPos (M.lookup (coerce k) p))
     | (k, v) <- toList s
     ]
   phi (NVClosure'  _    _) = NSym "<closure>"
   phi (NVPath'     p     ) = NLiteralPath p
-  phi (NVBuiltin'  name _) = NSym $ "builtins." <> name
+  phi (NVBuiltin'  name _) = NSym $ coerce @Text $ "builtins." <> coerce name
 
 prettyNValue
   :: forall t f m ann . MonadDataContext f m => NValue t f m -> Doc ann
@@ -383,7 +386,7 @@ printNix = iterNValueByDiscardWith thk phi
   phi (NVConstant' a ) = toString $ atomText a
   phi (NVStr'      ns) = show $ stringIgnoreContext ns
   phi (NVList'     l ) = toString $ "[ " <> unwords (fmap toText l) <> " ]"
-  phi (NVSet' s _) =
+  phi (NVSet' _ s) =
     "{ " <>
       concat
         [ check (toString k) <> " = " <> v <> "; "
@@ -400,4 +403,4 @@ printNix = iterNValueByDiscardWith thk phi
       where surround s = "\"" <> s <> "\""
   phi NVClosure'{}        = "<<lambda>>"
   phi (NVPath' fp       ) = fp
-  phi (NVBuiltin' name _) = toString $ "<<builtin " <> name <> ">>"
+  phi (NVBuiltin' name _) = toString @Text $ "<<builtin " <> coerce name <> ">>"
